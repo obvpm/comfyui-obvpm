@@ -498,14 +498,28 @@ app.registerExtension({
             });
 
             // ---- preview player ---------------------------------------
+            // Double-buffered for near-gapless hops: while one <video>
+            // plays, the next clip is already loaded and seeked in the
+            // hidden twin, so a seam is a visibility swap + play(), not a
+            // src teardown. Boundary cuts run on a per-frame rAF watcher
+            // (timeupdate only fires ~4x/s -- up to 250ms late).
             const videoWrap = document.createElement("div");
             videoWrap.classList.add("comfy-img-preview");
-            videoWrap.style.flex = "1";
-            const video = document.createElement("video");
-            video.controls = true;
-            video.playsInline = true;
+            Object.assign(videoWrap.style,
+                { flex: "1", position: "relative" });
+            const vids = [0, 1].map(() => {
+                const v = document.createElement("video");
+                v.playsInline = true;
+                Object.assign(v.style, {
+                    position: "absolute", inset: "0",
+                    width: "100%", height: "100%",
+                    objectFit: "contain", opacity: "0",
+                    pointerEvents: "none",
+                });
+                return v;
+            });
             container.append(header, strip, videoWrap);
-            videoWrap.append(video);
+            videoWrap.append(...vids);
 
             const widget = node.addDOMWidget("mctx_timeline", "div",
                 container, { hideOnZoom: false });
@@ -575,26 +589,86 @@ app.registerExtension({
             // ---- preview playback -------------------------------------
             let playlist = [];
             let playIdx = -1;
-            function playAt(i) {
-                if (i < 0 || i >= playlist.length) { playIdx = -1; return; }
-                playIdx = i;
-                const item = playlist[i];
-                video.src = api.apiURL(viewRoute(item.clip));
-                video.currentTime = item.enter / TL_FPS;
-                highlight(i);
-                video.play().catch(() => {
-                    video.muted = true;
-                    video.play().catch(() => {});
+            let act = 0;      // which of the two videos is on screen
+            let rafId = null;
+
+            function showActive() {
+                vids.forEach((v, k) => {
+                    const on = k === act;
+                    v.controls = on;
+                    v.style.opacity = on ? "1" : "0";
+                    v.style.pointerEvents = on ? "auto" : "none";
                 });
             }
-            video.addEventListener("timeupdate", () => {
-                const item = playlist[playIdx];
-                if (item && item.exit !== null &&
-                    video.currentTime >= item.exit / TL_FPS) {
-                    playAt(playIdx + 1);
+            function preloadInto(v, item) {
+                v._item = item ?? null;
+                if (!item) {
+                    v.removeAttribute("src");
+                    v.load();
+                    return;
                 }
-            });
-            video.addEventListener("ended", () => playAt(playIdx + 1));
+                v.src = api.apiURL(viewRoute(item.clip));
+                v.addEventListener("loadedmetadata", () => {
+                    // guard: a later preload may have replaced the src
+                    if (v._item === item) {
+                        v.currentTime = item.enter / TL_FPS;
+                    }
+                }, { once: true });
+            }
+            function watchBoundary() {
+                cancelAnimationFrame(rafId);
+                const tick = () => {
+                    const item = playlist[playIdx];
+                    const v = vids[act];
+                    if (!item) return;
+                    // half a frame early beats a quarter second late
+                    if (item.exit !== null &&
+                        v.currentTime >= item.exit / TL_FPS -
+                            0.5 / TL_FPS) {
+                        playAt(playIdx + 1);
+                        return;
+                    }
+                    rafId = requestAnimationFrame(tick);
+                };
+                rafId = requestAnimationFrame(tick);
+            }
+            function playAt(i) {
+                if (i < 0 || i >= playlist.length) {
+                    playIdx = -1;
+                    cancelAnimationFrame(rafId);
+                    return;
+                }
+                playIdx = i;
+                const item = playlist[i];
+                const standby = vids[1 - act];
+                if (standby._item === item && standby.readyState >= 1) {
+                    vids[act].pause();
+                    act = 1 - act;    // the hop: already loaded + seeked
+                } else {
+                    preloadInto(vids[act], item);
+                }
+                const v = vids[act];
+                if (v.readyState >= 1 &&
+                    Math.abs(v.currentTime - item.enter / TL_FPS) > 0.05) {
+                    v.currentTime = item.enter / TL_FPS;
+                }
+                showActive();
+                highlight(i);
+                v.muted = vids[1 - act].muted; // keep the user's choice
+                v.play().catch(() => {
+                    v.muted = true;
+                    v.play().catch(() => {});
+                });
+                preloadInto(vids[1 - act], playlist[i + 1]);
+                watchBoundary();
+            }
+            for (const v of vids) {
+                v.addEventListener("ended", () => {
+                    if (vids[act] === v && playIdx >= 0) {
+                        playAt(playIdx + 1);
+                    }
+                });
+            }
             playBtn.addEventListener("click", () => playAt(0));
 
             function highlight(active) {
@@ -723,9 +797,12 @@ app.registerExtension({
             };
             const onRemoved = node.onRemoved;
             node.onRemoved = function () {
-                video.pause();
-                video.removeAttribute("src");
-                video.load();
+                cancelAnimationFrame(rafId);
+                for (const v of vids) {
+                    v.pause();
+                    v.removeAttribute("src");
+                    v.load();
+                }
                 return onRemoved?.apply(this, arguments);
             };
 
