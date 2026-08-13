@@ -1,0 +1,42 @@
+"""obvpm/h3: non-linear MiniMax H3 clip composition (see DESIGN.md).
+
+Takes are clip pairs (MP4 + .mctx.safetensors latent sidecar) with
+content-addressed lineage; continuation runs through the pins pipeline
+(spec -> prepare -> apply) on top of vendored runtime patches. Imported
+by the pack root behind a guard: failure here must never take down the
+rest of obvpm.
+"""
+
+from .nodes_load import H3LoadVideoWithMCtx
+from .nodes_pins import (
+    H3MCtxApplyPins,
+    H3MCtxPinSpec,
+    H3TrimPinned,
+)
+from .nodes_save import (
+    H3SaveMCtxForVideo,
+    H3SaveVideoWithMCtx,
+    H3TrimAndSaveVideoWithMCtx,
+)
+
+NODE_CLASS_MAPPINGS = {
+    "H3SaveVideoWithMCtx": H3SaveVideoWithMCtx,
+    "H3TrimAndSaveVideoWithMCtx": H3TrimAndSaveVideoWithMCtx,
+    "H3SaveMCtxForVideo": H3SaveMCtxForVideo,
+    "H3LoadVideoWithMCtx": H3LoadVideoWithMCtx,
+    "H3MCtxPinSpec": H3MCtxPinSpec,
+    "H3MCtxApplyPins": H3MCtxApplyPins,
+    "H3TrimPinned": H3TrimPinned,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "H3SaveVideoWithMCtx": "H3 MCtx Save Video",
+    "H3TrimAndSaveVideoWithMCtx": "H3 MCtx Trim and Save Video",
+    "H3SaveMCtxForVideo": "H3 MCtx Save Sidecar for Video",
+    "H3LoadVideoWithMCtx": "H3 MCtx Load Video",
+    "H3MCtxPinSpec": "H3 MCtx Pin Spec",
+    "H3MCtxApplyPins": "H3 MCtx Apply Pins",
+    "H3TrimPinned": "H3 MCtx Trim Pinned",
+}
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

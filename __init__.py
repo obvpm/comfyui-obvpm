@@ -453,4 +453,20 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 WEB_DIRECTORY = "./web"
 
+# h3 subpackage: guarded import -- H3 breakage (missing dependency, moved
+# ComfyUI internals) must never take down the gates/switches above.
+try:
+    from .h3 import (
+        NODE_CLASS_MAPPINGS as _H3_CLASSES,
+        NODE_DISPLAY_NAME_MAPPINGS as _H3_NAMES,
+    )
+except Exception:
+    import logging
+    logging.getLogger("obvpm").exception(
+        "obvpm: the h3 subpackage failed to import; h3 nodes are "
+        "unavailable, the rest of obvpm is unaffected")
+else:
+    NODE_CLASS_MAPPINGS.update(_H3_CLASSES)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_H3_NAMES)
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
