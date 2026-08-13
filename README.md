@@ -141,4 +141,10 @@ and behaves like a built-in.
 
 ## License
 
-[GPL-3.0](LICENSE)
+This pack's own code: [Apache-2.0](LICENSE).
+
+Two runtime patches vendored under `h3/vendor/` are
+[GPL-3.0](h3/vendor/LICENSE) (from
+[ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context),
+see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)); while they are
+included, the pack as distributed is conveyed under GPL-3.0 terms.

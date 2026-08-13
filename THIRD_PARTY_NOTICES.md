@@ -15,8 +15,18 @@ Vendored verbatim into `h3/vendor/`:
 
 Additional mechanism knowledge in `h3/` (tail slicing soundness rules,
 audio window end-alignment, trim behavior) derives from the same
-project's `nodes.py`. This pack is GPL-3.0, compatible with the vendored
-code's license.
+project's `nodes.py`.
+
+### Licensing of this pack
+
+This pack's own code is licensed under **Apache-2.0** (see `LICENSE`).
+The two files under `h3/vendor/` remain **GPL-3.0** (their license text
+is kept beside them at `h3/vendor/LICENSE`). Because the pack is
+distributed with those files included, the combined work as distributed
+must be conveyed under GPL-3.0 terms; Apache-2.0 is one-way compatible
+with GPL-3.0, so this combination is permitted. If the vendored files
+are ever replaced by an independent implementation or an external
+dependency, the pack's own Apache-2.0 licensing stands alone.
 
 ## ComfyUI-MMH3Tools (MIT)
 
