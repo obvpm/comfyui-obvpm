@@ -141,4 +141,4 @@ and behaves like a built-in.
 
 ## License
 
-[GPL-3.0](LICENSE)
+[Apache-2.0](LICENSE)
