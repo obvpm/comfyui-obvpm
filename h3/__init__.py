@@ -20,6 +20,14 @@ from .nodes_save import (
     H3TrimAndSaveVideoWithMCtx,
 )
 
+try:
+    from . import preview_route
+    preview_route.register()
+except Exception:  # headless/test runs have no PromptServer; nodes still work
+    import logging
+    logging.getLogger("obvpm.h3").info(
+        "obvpm.h3: preview route not registered (no server)", exc_info=True)
+
 NODE_CLASS_MAPPINGS = {
     "H3SaveVideoWithMCtx": H3SaveVideoWithMCtx,
     "H3TrimAndSaveVideoWithMCtx": H3TrimAndSaveVideoWithMCtx,

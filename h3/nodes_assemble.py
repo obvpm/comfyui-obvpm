@@ -135,6 +135,46 @@ def _derive_seam(left, right):
     return None, 0, "no recorded relation: butt join"
 
 
+def resolve_sequence(sequence):
+    """sequence text -> entries with path/header/enter/exit, seams derived.
+
+    Shared by the Assemble node and the preview route; the traversal
+    guard matters for the latter (the route accepts arbitrary text).
+    """
+    root = os.path.abspath(folder_paths.get_output_directory())
+    entries = _parse_sequence(sequence)
+    if not entries:
+        raise ValueError(
+            "H3Assemble: the sequence is empty. List one clip per "
+            "line, in playback order.")
+    for e in entries:
+        e["path"] = os.path.abspath(os.path.join(root, e["clip"]))
+        if not e["path"].startswith(root + os.sep):
+            raise ValueError(
+                "H3Assemble: %s escapes the output folder" % e["clip"])
+        if not os.path.isfile(e["path"]):
+            raise ValueError("H3Assemble: clip not found: %s" % e["clip"])
+        e["header"] = _read_verified_header(e["path"])
+
+    # seams: enter[i] from the join with the left neighbor, exit[i]
+    # from the join with the right neighbor (None = delivered end)
+    for e in entries:
+        e["enter"], e["exit"] = 0, None
+    for left, right in zip(entries, entries[1:]):
+        exit_f, enter_f, note = _derive_seam(left, right)
+        if left["exit"] is None:
+            left["exit"] = exit_f
+        right["enter"] = enter_f
+        _LOG.info("obvpm.h3: seam %s | %s -- %s",
+                  left["clip"], right["clip"], note)
+    for e in entries:
+        if e["enter_override"] is not None:
+            e["enter"] = e["enter_override"]
+            _LOG.info("obvpm.h3: %s enters at frame %d (manual override)",
+                      e["clip"], e["enter"])
+    return entries
+
+
 class _StreamMismatch(Exception):
     """Pieces cannot be spliced losslessly; fall back to full re-encode."""
 
@@ -357,33 +397,7 @@ class H3Assemble:
         import torch
 
         root = folder_paths.get_output_directory()
-        entries = _parse_sequence(sequence)
-        if not entries:
-            raise ValueError(
-                "H3Assemble: the sequence is empty. List one clip per "
-                "line, in playback order.")
-        for e in entries:
-            e["path"] = os.path.join(root, e["clip"])
-            if not os.path.isfile(e["path"]):
-                raise ValueError("H3Assemble: clip not found: %s" % e["clip"])
-            e["header"] = _read_verified_header(e["path"])
-
-        # seams: enter[i] from the join with the left neighbor, exit[i]
-        # from the join with the right neighbor (None = delivered end)
-        for e in entries:
-            e["enter"], e["exit"] = 0, None
-        for left, right in zip(entries, entries[1:]):
-            exit_f, enter_f, note = _derive_seam(left, right)
-            if left["exit"] is None:
-                left["exit"] = exit_f
-            right["enter"] = enter_f
-            _LOG.info("obvpm.h3: seam %s | %s -- %s",
-                      left["clip"], right["clip"], note)
-        for e in entries:
-            if e["enter_override"] is not None:
-                e["enter"] = e["enter_override"]
-                _LOG.info("obvpm.h3: %s enters at frame %d (manual override)",
-                          e["clip"], e["enter"])
+        entries = resolve_sequence(sequence)
 
         from comfy_api.input_impl import VideoFromFile
         frames_parts, audio_parts, sample_rate = [], [], None
