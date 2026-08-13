@@ -52,6 +52,76 @@ def _cached_hash(path):
     return digest
 
 
+class H3LoadMCtx:
+    """MCTX-only loader: pick a clip, get its verified bundle -- no decode.
+
+    The lean continuation path: when a graph only needs the latents (the
+    standard extend), decoding the MP4 is pure waste. This loader
+    hash-verifies the pairing and reads the sidecar; the video itself is
+    never opened. Use H3LoadVideoWithMCtx when you also want frames/audio.
+    """
+
+    CATEGORY = "obvpm/h3"
+    FUNCTION = "load"
+    RETURN_TYPES = ("MCTX",)
+    RETURN_NAMES = ("mctx",)
+    DESCRIPTION = (
+        "Loads ONLY a clip's motion-context bundle (latents + lineage) "
+        "from its verified sidecar -- the video is never decoded, so this "
+        "is the fast path for extend graphs. Refuses when no sidecar "
+        "pairs with the file (unlike the full loader, there is no pixel "
+        "route to fall back to here)."
+    )
+    OUTPUT_TOOLTIPS = (
+        "The clip's latents + header for the pins pipeline.",
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        clips = _list_clips()
+        return {
+            "required": {
+                "clip": (clips if clips else [""], {
+                    "tooltip": "A video in the output folder with an mctx "
+                               "sidecar (saved by the H3 MCtx save "
+                               "nodes)."}),
+            },
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, clip):
+        return H3LoadVideoWithMCtx.IS_CHANGED(clip)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, clip):
+        return H3LoadVideoWithMCtx.VALIDATE_INPUTS(clip)
+
+    def load(self, clip):
+        path = os.path.join(folder_paths.get_output_directory(), clip)
+        side = mctx.sidecar_path(path)
+        if not os.path.isfile(side):
+            raise ValueError(
+                "H3LoadMCtx: %s has no .mctx.safetensors sidecar. Only "
+                "clips saved by the H3 MCtx save nodes carry one; for "
+                "plain videos use H3LoadVideoWithMCtx + the pixel route."
+                % clip)
+        header = mctx.read_header(side)
+        actual = _cached_hash(path)
+        if header.get("self_id") != actual:
+            raise ValueError(
+                "H3LoadMCtx: %s does not pair with its sidecar (the video "
+                "was re-encoded, edited or swapped since the take was "
+                "saved). Latent continuation refused." % clip)
+        video_lat, audio_lat, header = mctx.load_sidecar(side)
+        bundle = mctx.make_mctx(actual, video_lat, audio_lat, header,
+                                origin="sampled")
+        _LOG.info("obvpm.h3: %s mctx loaded (%s, %s frames delivered), "
+                  "video not decoded", clip,
+                  header.get("relation") or "root",
+                  header.get("delivered_frames"))
+        return (bundle,)
+
+
 class H3LoadVideoWithMCtx:
     CATEGORY = "obvpm/h3"
     FUNCTION = "load"

@@ -115,17 +115,34 @@ class H3MCtxPinSpec:
                                "fluid, 22 nearly seamless; longer windows pin "
                                "more motion but cost more of the new clip. "
                                "1 is reserved for the future keyframe path."}),
-                "take_from": (["tail"], {
+                "take_from": (["head", "tail", "at_frame"], {
                     "default": "tail",
-                    "tooltip": "Which part of the source supplies the window. "
-                               "Phase 1: the tail (extend). head/at_frame "
-                               "arrive with prepend support."}),
-                "place": (["before"], {
+                    "tooltip": "Which part of the source supplies the "
+                               "window: tail = the end (extend), head = the "
+                               "start (for future prepends), at_frame = the "
+                               "window ENDING at take_from_frame (a "
+                               "timeline cut). Latent-grade cuts must land "
+                               "on the 17-frame grid; misaligned cuts are "
+                               "refused with the nearest valid frames."}),
+                "take_from_frame": ("INT", {
+                    "default": 0, "min": 0, "max": 4096,
+                    "tooltip": "Only used when take_from is at_frame: the "
+                               "delivered frame the window ends at (your "
+                               "cut point)."}),
+                "place": (["before", "after", "at_frame"], {
                     "default": "before",
                     "tooltip": "Where the pinned run sits in the target: "
-                               "before = context leading in (extend); the "
-                               "run re-renders at the head and is trimmed. "
-                               "after/inside arrive in later phases."}),
+                               "before = context leading in (extend; "
+                               "re-rendered at the head, trimmed). after = "
+                               "context leading out (prepend; generation "
+                               "runs toward it, re-rendered at the tail, "
+                               "trimmed -- typically with take_from=head). "
+                               "at_frame (kept interior content) is NOT "
+                               "YET IMPLEMENTED."}),
+                "place_at_frame": ("INT", {
+                    "default": 0, "min": 0, "max": 4096,
+                    "tooltip": "Only used when place is at_frame (not yet "
+                               "implemented)."}),
                 "audio_window": ("INT", {
                     "default": 0, "min": 0, "max": 240,
                     "tooltip": "Frames of tail audio to pin, end-aligned with "
@@ -138,8 +155,8 @@ class H3MCtxPinSpec:
             },
         }
 
-    def build(self, mctx, window, take_from, place, audio_window,
-              pin_specs=None):
+    def build(self, mctx, window, take_from, take_from_frame, place,
+              place_at_frame, audio_window, pin_specs=None):
         if mctx is None:
             raise ValueError(
                 "H3MCtxPinSpec: mctx is None -- the loaded clip has no "
@@ -149,17 +166,25 @@ class H3MCtxPinSpec:
         meta = mctx["meta"]
         delivered = int(meta.get("delivered_frames", 0))
         w = int(window)
+        if take_from == "tail":
+            start = delivered - w
+        elif take_from == "head":
+            start = 0
+        else:
+            start = int(take_from_frame) - w
         spec = {
             "source": mctx,
             "source_id": mctx.get("self_id", ""),
             "source_kind": "clip",
             "take_from": take_from,
+            "take_from_frame": int(take_from_frame),
             "requested_window": w,
-            # resolved best-effort range; Prepare re-derives under its
-            # snap policy and is authoritative
-            "source_start": max(0, delivered - w),
+            # resolved best-effort range; Apply re-derives under its snap
+            # policy and is authoritative
+            "source_start": max(0, start),
             "source_frames": min(w, delivered) if delivered else w,
             "place": place,
+            "place_at_frame": int(place_at_frame),
             "audio_window": int(audio_window),
         }
         return (list(pin_specs or []) + [spec],)
@@ -204,29 +229,37 @@ def _prepare_clip_pin(i, spec, snap_down):
                 "stored latent covers %d. The sidecar is inconsistent; "
                 "refusing." % (meta_raw, raw_frames))
         delivered = int(meta.get("delivered_frames", raw_frames))
-        pinned_tail = int(meta.get("pinned_tail_frames", 0))
-        if pinned_tail:
+        pinned_head = int(meta.get("pinned_head_frames", 0))
+        take_from = spec.get("take_from", "tail")
+        cut_frame = int(spec.get("take_from_frame", 0))
+
+        # window availability depends on where it's taken from
+        if take_from == "at_frame":
+            if cut_frame < 1 or cut_frame > delivered:
+                raise ValueError(
+                    "H3MCtxApplyPins: spec %d's cut frame %d is outside the "
+                    "source's delivered range (1..%d)."
+                    % (i, cut_frame, delivered))
+            available = cut_frame
+        elif take_from in ("tail", "head"):
+            available = delivered
+        else:
             raise ValueError(
-                "H3MCtxApplyPins: spec %d's source has %d pinned tail frames; "
-                "tail slicing across pinned scaffolding is not supported "
-                "yet." % (i, pinned_tail))
-        if spec.get("take_from") != "tail" or spec.get("place") != "before":
-            raise ValueError(
-                "H3MCtxApplyPins: spec %d asks for take_from=%r place=%r; "
-                "Phase 1 supports tail->before (extend) only."
-                % (i, spec.get("take_from"), spec.get("place")))
+                "H3MCtxApplyPins: spec %d has unknown take_from %r."
+                % (i, take_from))
 
         n = int(spec.get("requested_window", 22))
-        if n > delivered:
-            snapped = fr.snap_window(delivered)
+        if n > available:
+            snapped = fr.snap_window(available)
             if not snap_down or snapped is None:
                 raise ValueError(
-                    "H3MCtxApplyPins: spec %d wants a %d frame window but the "
-                    "source delivers only %d frames. Enable "
+                    "H3MCtxApplyPins: spec %d wants a %d frame window but "
+                    "only %d frames are available (%s). Enable "
                     "snap_window_down_to_available to use %s instead."
-                    % (i, n, delivered, snapped if snapped else "nothing"))
-            _LOG.warning("obvpm.h3: spec %d window %d -> %d (source only "
-                         "delivers %d frames)", i, n, snapped, delivered)
+                    % (i, n, available, take_from,
+                       snapped if snapped else "nothing"))
+            _LOG.warning("obvpm.h3: spec %d window %d -> %d (only %d frames "
+                         "available)", i, n, snapped, available)
             n = snapped
         if n == 1:
             raise ValueError(
@@ -240,36 +273,82 @@ def _prepare_clip_pin(i, spec, snap_down):
                 "H3MCtxApplyPins: %d frames is not a whole number of latent "
                 "steps; the window ladder no longer matches the VAE grid."
                 % n)
-        # The source's delivered tail is also its raw tail (pinned_tail==0),
-        # so the tail slice comes straight off the raw latent. Phase-0
-        # check via tail_slice_start; ValueError = unsound slice.
-        start = fr.tail_slice_start(raw_steps, steps)
-        video_slice = video[:1, :, start:].clone()
+
+        # Delivered-frame start of the slice, then mapped onto the RAW
+        # timeline (the stored latent includes any pinned scaffolding).
+        if take_from == "tail":
+            d_start = delivered - n
+        elif take_from == "head":
+            d_start = 0
+        else:
+            d_start = cut_frame - n
+        raw_start = pinned_head + d_start
+
+        # Latent-grade cut rule: phase-0 slice starts occur only at
+        # 17-frame group boundaries. This one check covers everything the
+        # old special cases did -- pinned tails, misaligned continuation
+        # heads (DESIGN 4a), arbitrary interior cuts.
+        if raw_start % fr.FRAMES_PER_GROUP != 0:
+            lo = (raw_start // fr.FRAMES_PER_GROUP) * fr.FRAMES_PER_GROUP
+            hi = lo + fr.FRAMES_PER_GROUP
+            suggest = sorted(set(
+                b - pinned_head + n for b in (lo, hi)
+                if 0 <= b - pinned_head and b - pinned_head + n <= delivered))
+            raise ValueError(
+                "H3MCtxApplyPins: spec %d's window would start at raw frame "
+                "%d, which is not on the 17-frame latent grid -- the slice "
+                "would be unsound. Nearest latent-grade window END frames: "
+                "%s. (Or cross to pixels via H3MCtxFromFrames, Phase 2.)"
+                % (i, raw_start, suggest))
+        k = raw_start // fr.FRAMES_PER_GROUP * fr.LATENTS_PER_GROUP
+        if fr.frame_at_latent(k) != raw_start:
+            raise RuntimeError(
+                "H3MCtxApplyPins: step mapping disagreement (frame %d -> "
+                "step %d -> frame %d). Upstream grid change; refusing."
+                % (raw_start, k, fr.frame_at_latent(k)))
+        raw_end = raw_start + n
+        if raw_end > raw_frames or k + steps > raw_steps:
+            raise ValueError(
+                "H3MCtxApplyPins: spec %d's window (raw frames %d..%d) "
+                "exceeds the stored latent (%d frames)."
+                % (i, raw_start, raw_end, raw_frames))
+
+        video_slice = video[:1, :, k:k + steps].clone()
         covered = fr.pixel_frames(steps)
         if covered != n:
             raise RuntimeError(
                 "H3MCtxApplyPins: %d steps cover %d frames, expected %d. "
                 "Upstream VAE grid change; refusing." % (steps, covered, n))
 
-        # Audio: end-aligned with the video window. Length via boundary
-        # difference on the cumulative grid, never a converted delta.
+        # Audio: end-aligned with the video window's END, boundaries on
+        # the cumulative grid, never converted deltas.
         a_frames = int(spec.get("audio_window", 0)) or n
         total_t = int(audio.shape[-1])
-        rt = fr.audio_span(raw_frames - min(a_frames, raw_frames), raw_frames)
-        if rt > total_t:
+        a_lo = max(0, raw_end - a_frames)
+        start_idx = fr.audio_total(a_lo)
+        end_idx = min(total_t, fr.audio_total(raw_end))
+        rt = max(0, end_idx - start_idx)
+        if rt < fr.audio_span(a_lo, raw_end):
             _LOG.warning("obvpm.h3: audio window wants %d steps, the latent "
-                         "has %d; pinning all of it", rt, total_t)
-            rt = total_t
-        overhang = fr.audio_overhang(total_t, raw_frames)
-        if overhang is None:
-            _LOG.warning("obvpm.h3: unexpected audio grid (%d steps for %d "
-                         "frames); assuming no overhang", total_t, raw_frames)
+                         "supplies %d; pinning what there is",
+                         fr.audio_span(a_lo, raw_end), rt)
+        # The grid overhang only exists at the CLIP's end; an interior
+        # window ends exactly on its boundary coordinate.
+        if raw_end == raw_frames:
+            overhang = fr.audio_overhang(total_t, raw_frames)
+            if overhang is None:
+                _LOG.warning("obvpm.h3: unexpected audio grid (%d steps for "
+                             "%d frames); assuming no overhang",
+                             total_t, raw_frames)
+                overhang = 0.0
+        else:
             overhang = 0.0
-        audio_slice = audio[:1, ..., total_t - rt:].clone() if rt > 0 else None
+        audio_slice = (audio[:1, ..., start_idx:end_idx].clone()
+                       if rt > 0 else None)
 
         return {
             "kind": "clip",
-            "place": "before",
+            "place": spec.get("place", "before"),
             "video": video_slice,
             "steps": steps,
             "covered": covered,
@@ -285,7 +364,7 @@ def _prepare_clip_pin(i, spec, snap_down):
             # downstream trim/save read what really happened
             "spec": dict(
                 {k: v for k, v in spec.items() if k != "source"},
-                source_start=delivered - n,
+                source_start=d_start,
                 source_frames=n,
             ),
         }
@@ -331,17 +410,20 @@ class H3MCtxApplyPins:
         }
 
     def apply(self, conditioning, latent, pin_specs, snap_window_down_to_available):
+        for i, s in enumerate(pin_specs or []):
+            if s.get("place") == "at_frame":
+                raise ValueError(
+                    "H3MCtxApplyPins: spec %d places 'at_frame' -- not yet "
+                    "implemented; arrives with inside pins/repaint (a later "
+                    "phase)." % i)
         pins = _prepare_pins(pin_specs, snap_window_down_to_available)
-        before = [p for p in pins if p.get("place") == "before"]
-        if len(before) != len(pins):
+        if len(pins) != 1:
             raise ValueError(
-                "H3MCtxApplyPins: only before-placement pins are supported "
-                "in Phase 1.")
-        if len(before) != 1:
-            raise ValueError(
-                "H3MCtxApplyPins: exactly one before-pin is supported in "
-                "Phase 1; got %d." % len(before))
-        pin = before[0]
+                "H3MCtxApplyPins: exactly one pin per generation for now; "
+                "got %d. (before+after together = bridging, a later "
+                "experiment.)" % len(pins))
+        pin = pins[0]
+        place = pin.get("place")
 
         target_video, _ = unpack_av(latent, name="latent")
         latent_t = int(target_video.shape[2])
@@ -368,10 +450,14 @@ class H3MCtxApplyPins:
 
         _ensure_layout_patch()
 
-        # Head-anchored run: pinned rows occupy delivered indices
-        # 0..covered-1; stock gets a legal index-0 anchor, the real
-        # position rides under MC_KEY (vendored mechanism).
-        offsets = fr.step_offsets(int(pin["steps"]))
+        # Pinned run coordinates on the target timeline. before: indices
+        # 0..covered-1 (extend; trimmed off the head). after: the LAST
+        # covered indices (prepend; generation runs TOWARD the pinned
+        # content, which generalizes stock's trained-in last-frame anchor;
+        # trimmed off the tail). Stock always gets a legal index-0 anchor;
+        # the real position rides under MC_KEY (vendored mechanism).
+        base = 0 if place == "before" else frame_count - covered
+        offsets = [base + o for o in fr.step_offsets(int(pin["steps"]))]
         keyframes = []
         for k, p in enumerate(offsets):
             keyframes.append({
@@ -387,13 +473,16 @@ class H3MCtxApplyPins:
         rt = int(pin.get("audio_steps", 0))
         if rt > 0 and pin.get("audio") is not None:
             _ensure_payload_patch()
-            # End-align the pinned audio with the pinned video: both end at
-            # delivered frame `covered`. The sliced audio reaches
-            # `overhang` of a step past the source's last frame, so the
+            # End-align the pinned audio with the pinned video's END on
+            # the target timeline: frame `covered` for a before-pin,
+            # `frame_count` for an after-pin. The sliced audio reaches
+            # `overhang` of a step past the source slice's end (nonzero
+            # only when the slice ends at the source clip's end), so the
             # end coordinate moves by that much, then snaps onto the
             # target's own audio grid (a third of a step is 8.3 ms; the
             # snap stops the offset cycling across chains). Vendored math.
-            end_frame = float(covered) + float(pin["overhang"]) / fr.FRAME_RESCALE
+            end_base = covered if place == "before" else frame_count
+            end_frame = float(end_base) + float(pin["overhang"]) / fr.FRAME_RESCALE
             end_coord = round(fr.FRAME_RESCALE * end_frame)
             end_frame = end_coord / fr.FRAME_RESCALE
             ref = {
@@ -406,11 +495,14 @@ class H3MCtxApplyPins:
                 out, {"minimax_refs": [ref]}, append=True)
 
         _LOG.info(
-            "obvpm.h3: pinned %d frames (%d steps) at head of a %d frame "
-            "clip at %dx%d; audio %s; trim %d off the head",
-            covered, int(pin["steps"]), frame_count, width, height,
+            "obvpm.h3: pinned %d frames (%d steps) at the %s of a %d frame "
+            "clip at %dx%d (indices %d..%d); audio %s; trim %d off the %s",
+            covered, int(pin["steps"]),
+            "head" if place == "before" else "tail",
+            frame_count, width, height, offsets[0], offsets[-1],
             ("%d steps ending at frame %.3f" % (rt, end_frame)) if rt > 0
-            and pin.get("audio") is not None else "off", covered)
+            and pin.get("audio") is not None else "off", covered,
+            "head" if place == "before" else "tail")
         return (out, pins)
 
 

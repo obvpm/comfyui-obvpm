@@ -7,7 +7,7 @@ by the pack root behind a guard: failure here must never take down the
 rest of obvpm.
 """
 
-from .nodes_load import H3LoadVideoWithMCtx
+from .nodes_load import H3LoadMCtx, H3LoadVideoWithMCtx
 from .nodes_pins import (
     H3MCtxApplyPins,
     H3MCtxPinSpec,
@@ -24,6 +24,7 @@ NODE_CLASS_MAPPINGS = {
     "H3TrimAndSaveVideoWithMCtx": H3TrimAndSaveVideoWithMCtx,
     "H3SaveMCtxForVideo": H3SaveMCtxForVideo,
     "H3LoadVideoWithMCtx": H3LoadVideoWithMCtx,
+    "H3LoadMCtx": H3LoadMCtx,
     "H3MCtxPinSpec": H3MCtxPinSpec,
     "H3MCtxApplyPins": H3MCtxApplyPins,
     "H3TrimPinned": H3TrimPinned,
@@ -32,8 +33,9 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3SaveVideoWithMCtx": "H3 MCtx Save Video",
     "H3TrimAndSaveVideoWithMCtx": "H3 MCtx Trim and Save Video",
-    "H3SaveMCtxForVideo": "H3 MCtx Save Sidecar for Video",
+    "H3SaveMCtxForVideo": "H3 MCtx Save",
     "H3LoadVideoWithMCtx": "H3 MCtx Load Video",
+    "H3LoadMCtx": "H3 MCtx Load",
     "H3MCtxPinSpec": "H3 MCtx Pin Spec",
     "H3MCtxApplyPins": "H3 MCtx Apply Pins",
     "H3TrimPinned": "H3 MCtx Trim Pinned",
