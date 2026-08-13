@@ -368,7 +368,7 @@ const TL_COLORS = { seamless: "#4d9960", cut: "#c9973b", butt: "#a4aab4" };
 function tldbg(...args) {
     console.log("[obvpm-h3-timeline]", ...args);
 }
-tldbg("timeline code loaded (inside h3_mctx_preview.js)");
+tldbg("timeline code loaded, build v7-panel-probe");
 
 function tlParseSequence(text) {
     const out = [];
@@ -425,6 +425,72 @@ function tlProbeClipFrames(clip) {
         }));
     }
     return tlFramesCache.get(clip);
+}
+
+const TL_BUILD = "v7-panel-probe";
+
+// The color of an actually-VISIBLE UI panel beats the legacy CSS var:
+// modern Comfy paints its menus with different tokens, and a user
+// palette can leave --comfy-menu-bg near-black while the real panels
+// are lighter. Sample rendered panels first, fall back to the var.
+function tlPanelColor() {
+    const sels = [".comfyui-menu", ".side-tool-bar-container",
+                  ".comfyui-body-top", ".p-menubar", ".actionbar"];
+    for (const sel of sels) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const bg = getComputedStyle(el).backgroundColor;
+        if (bg && bg !== "transparent" &&
+            !/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0\)/.test(bg)) {
+            return { color: bg, source: sel };
+        }
+    }
+    return { color: tlCssVar("--comfy-menu-bg", "#353535"),
+             source: "--comfy-menu-bg" };
+}
+
+function tlCssVar(name, fallback) {
+    try {
+        const v = getComputedStyle(document.documentElement)
+            .getPropertyValue(name).trim();
+        return v || fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+// darken a CSS color by scaling its channels; plain rgb()/rgba() out so
+// every engine applies it (fancy color functions get silently rejected
+// by older CSSOMs, which leaves the property unset entirely)
+function tlDarken(color, f, off) {
+    let r, g, b, a = null;
+    let m = color.match(/^#([0-9a-f]{3})$/i);
+    if (m) {
+        [r, g, b] = [...m[1]].map((c) => parseInt(c + c, 16));
+    } else if ((m = color.match(/^#([0-9a-f]{6})([0-9a-f]{2})?$/i))) {
+        r = parseInt(m[1].slice(0, 2), 16);
+        g = parseInt(m[1].slice(2, 4), 16);
+        b = parseInt(m[1].slice(4, 6), 16);
+        if (m[2]) a = parseInt(m[2], 16) / 255;
+    } else if ((m = color.match(/^rgba?\(([^)]+)\)$/i))) {
+        const parts = m[1].split(/[,/\s]+/).filter(Boolean).map(Number);
+        [r, g, b] = parts;
+        if (parts.length > 3) a = parts[3];
+        if ([r, g, b].some((x) => !Number.isFinite(x))) return color;
+    } else {
+        return color; // unknown notation: leave untouched
+    }
+    const sc = (x) =>
+        Math.round(Math.max(0, Math.min(255, x * f + (off || 0))));
+    return a === null
+        ? `rgb(${sc(r)}, ${sc(g)}, ${sc(b)})`
+        : `rgba(${sc(r)}, ${sc(g)}, ${sc(b)}, ${a})`;
+}
+
+function tlAlpha(color, a) {
+    const c = tlDarken(color, 1, 0); // normalizes to rgb()/rgba()
+    const m = c.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    return m ? `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})` : c;
 }
 
 const tlMetaCache = new Map();
@@ -584,21 +650,7 @@ app.registerExtension({
             }
             capT.style.top = "0";
             capB.style.bottom = "0";
-            const nubL = document.createElement("div");
-            const nubR = document.createElement("div");
-            for (const nub of [nubL, nubR]) {
-                Object.assign(nub.style, {
-                    position: "absolute", top: "50%",
-                    transform: "translateY(-50%)",
-                    width: "7px", height: "7px",
-                    borderRadius: "50%", background: "#4d9960",
-                    boxShadow: "0 0 0 1px rgba(0,0,0,0.4)",
-                    display: "none",
-                });
-            }
-            nubL.style.left = "-5px";
-            nubR.style.right = "-5px";
-            dropLine.append(beam, capT, capB, nubL, nubR);
+            dropLine.append(beam, capT, capB);
             let dragFrom = null;      // index being dragged
             let dropInsertAt = null;  // insertion index in the gap
             const playhead = document.createElement("div");
@@ -626,25 +678,38 @@ app.registerExtension({
                 // tuned per ground: lighter on a light page, darker
                 // on a dark one; buttons/picker share it
                 if (light) {
+                    // same theme-variable derivation as dark mode:
+                    // surfaces follow the palette's input color, with
+                    // dark ink and darker mixes for edges/panel
+                    const lb = "var(--comfy-input-bg, #dfe2e8)";
                     return {
-                        rest: "#3d434e", text: "#e8eaee",
-                        sub: "#aab1bc",
-                        active: "#1f4390", activeText: "#e8eaee",
-                        edge: "#59606c", tick: "#6a707a",
-                        tickLine: "#b6bac3", stripBg: "#c9ccd3",
+                        rest: lb, text: "#23262b", sub: "#5c6270",
+                        active: "#3557b0", activeText: "#f2f4f8",
+                        edge: tlDarken(tlCssVar(
+                            "--comfy-input-bg", "#dfe2e8"), 0.76),
+                        tick: "#6a707a", tickLine: "#b6bac3",
+                        // the theme's own panel color, not a
+                        // black-mix (mixing black into a light color
+                        // makes mud, not shade)
+                        stripBg: tlAlpha(tlCssVar(
+                            "--comfy-input-bg", "#dfe2e8"), 0.4),
                         drop: "#454b55",
                     };
                 }
-                // dark: derive everything from the theme's input
-                // surface with color-mix(); var() resolves at paint
-                // time, so palette swaps restyle the widget live
+                // dark: surfaces follow the theme's input color; the
+                // derived shades (edge/panel) are computed in JS at
+                // palette time, not with CSS color functions
                 const base = "var(--comfy-input-bg, #17191f)";
                 return {
                     rest: base, text: "#e8eaee", sub: "#9aa1ac",
                     active: "#1f4390", activeText: "#e8eaee",
-                    edge: `color-mix(in srgb, ${base} 80%, white)`,
+                    edge: tlDarken(tlCssVar(
+                        "--comfy-input-bg", "#17191f"), 1.6),
                     tick: "#9aa1ac", tickLine: "#3a3f48",
-                    stripBg: `color-mix(in srgb, ${base} 55%, black)`,
+                    // the clip bars' surface at half opacity; the
+                    // node body blends through
+                    stripBg: tlAlpha(
+                        tlCssVar("--comfy-input-bg", "#17191f"), 0.4),
                     drop: "#d7dbe2",
                 };
             }
@@ -658,6 +723,20 @@ app.registerExtension({
                 timelineWrap.style.background = PAL.stripBg;
                 timelineWrap.style.borderRadius = "4px";
                 timelineWrap.style.padding = "3px";
+                {   // one-line diagnosis: paste this if colors look off
+                    const panel = tlPanelColor();
+                    requestAnimationFrame(() => tldbg("chrome:",
+                        "panel", panel.color, "from", panel.source,
+                        "| menu-var",
+                        tlCssVar("--comfy-menu-bg", "(unset)"),
+                        "| input-var",
+                        tlCssVar("--comfy-input-bg", "(unset)"),
+                        "| content-bg",
+                        tlCssVar("--content-bg", "(unset)"),
+                        "| stripBg set to", PAL.stripBg,
+                        "| computed",
+                        getComputedStyle(timelineWrap).backgroundColor));
+                }
                 for (const el of [beam, capT, capB]) {
                     el.style.background = PAL.drop;
                 }
@@ -731,18 +810,28 @@ app.registerExtension({
                     }
                 }
             }
+            let lastEntries = [];
             const rulerRO = new ResizeObserver(
-                () => requestAnimationFrame(drawRuler));
+                () => requestAnimationFrame(() => {
+                    drawRuler();
+                    drawLinks(lastEntries); // zones sit at computed x
+                }));
             rulerRO.observe(timelineWrap);
-            let wasLightTick = null;
+            let themeTimer = null;
             const themeMO = new MutationObserver(() => {
-                const next = themePalette();
-                if (next.tick === (wasLightTick ?? PAL.tick) &&
-                    next.rest === PAL.rest) return;
-                wasLightTick = next.tick;
-                PAL = next;
-                applyChrome();
-                void refresh(); // reskin blocks/pills/popup chrome
+                clearTimeout(themeTimer);
+                themeTimer = setTimeout(() => {
+                    // compare COMPUTED values: the var() strings are
+                    // constants, but tlAlpha/tlDarken outputs change
+                    // whenever the underlying theme vars do
+                    const next = themePalette();
+                    if (JSON.stringify(next) === JSON.stringify(PAL)) {
+                        return;
+                    }
+                    PAL = next;
+                    applyChrome();
+                    void refresh(); // reskin blocks/pills/popup chrome
+                }, 150);
             });
             for (const t of [document.documentElement, document.body]) {
                 themeMO.observe(t, { attributes: true,
@@ -1206,7 +1295,20 @@ app.registerExtension({
                 scrubbing = false;
             });
 
+            let lastHighlight = -1;
+            let linkTinted = false;
+            function clearLinkTint() {
+                if (!linkTinted) return;
+                linkTinted = false;
+                highlight(lastHighlight);
+            }
+            function tintLinkBlock(el) {
+                el.style.background = "#1e5231";
+                el.style.color = "#e9f5ec";
+                linkTinted = true;
+            }
             function highlight(active) {
+                lastHighlight = active;
                 blockEls.forEach((el, i) => {
                     el.style.background =
                         i === active ? PAL.active : PAL.rest;
@@ -1568,21 +1670,20 @@ app.registerExtension({
                             // dropping here would not move the clip
                             dropInsertAt = null;
                             dropLine.style.display = "none";
+                            clearLinkTint();
                             return;
                         }
                         dropInsertAt = j;
-                        // would dropping here LINK with either neighbor?
+                        // link preview: tint the WHOLE clip(s)
+                        // this drop would link with dark green
                         const dragged = entries[dragFrom];
                         const linkL = j > 0 && linkedMeta(
                             entries[j - 1]?.meta, dragged?.meta);
                         const linkR = j < entries.length && linkedMeta(
                             dragged?.meta, entries[j]?.meta);
-                        nubL.style.display = linkL ? "block" : "none";
-                        nubR.style.display = linkR ? "block" : "none";
-                        dropLine.title = linkL || linkR
-                            ? "will link " + [linkL && "with left",
-                                linkR && "with right"]
-                                .filter(Boolean).join(" and ") : "";
+                        clearLinkTint();
+                        if (linkL) tintLinkBlock(blockEls[j - 1]);
+                        if (linkR) tintLinkBlock(blockEls[j]);
                         const cx = before
                             ? block.offsetLeft - 1.5
                             : block.offsetLeft + block.offsetWidth + 1.5;
@@ -1592,6 +1693,7 @@ app.registerExtension({
                     });
                     block.addEventListener("drop", (ev) => {
                         dropLine.style.display = "none";
+                        clearLinkTint();
                         if (dragFrom === null || dropInsertAt === null) {
                             return;
                         }
@@ -1605,6 +1707,7 @@ app.registerExtension({
                     });
                     block.addEventListener("dragend", () => {
                         dropLine.style.display = "none";
+                        clearLinkTint();
                         dragFrom = dropInsertAt = null;
                     });
                     blockEls.push(block);
@@ -1612,6 +1715,7 @@ app.registerExtension({
                 });
                 highlight(playIdx);
                 // ruler + link geometry depend on freshly laid-out blocks
+                lastEntries = entries;
                 requestAnimationFrame(() => {
                     drawRuler();
                     drawLinks(entries);
