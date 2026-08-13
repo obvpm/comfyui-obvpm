@@ -54,19 +54,84 @@ function attachSampler(node, widget, el) {
 }
 // --------------------------------------------------------------------------
 
-function viewURL(clipValue) {
-    if (!clipValue) return null;
-    let filename = String(clipValue);
+function viewRoute(value) {
+    if (!value) return null;
+    let filename = String(value);
     let subfolder = "";
     const slash = filename.lastIndexOf("/");
     if (slash >= 0) {
         subfolder = filename.slice(0, slash);
         filename = filename.slice(slash + 1);
     }
-    return api.apiURL(
-        `/view?filename=${encodeURIComponent(filename)}` +
-        `&subfolder=${encodeURIComponent(subfolder)}&type=output`
-    );
+    return `/view?filename=${encodeURIComponent(filename)}` +
+        `&subfolder=${encodeURIComponent(subfolder)}&type=output`;
+}
+
+function viewURL(clipValue) {
+    const route = viewRoute(clipValue);
+    return route ? api.apiURL(route) : null;
+}
+
+// ---- mctx sidecar badge --------------------------------------------------
+
+const SIDECAR_SUFFIX = ".mctx.safetensors";
+const MCTX_FORMAT = "mctx_v1";
+
+function sidecarValue(clipValue) {
+    // mctx.sidecar_path convention: video extension REPLACED by the suffix
+    return String(clipValue).replace(/\.[^.]+$/, "") + SIDECAR_SUFFIX;
+}
+
+// Range-read the sidecar's safetensors header, mirroring mctx.read_header:
+// 8 bytes little-endian header length, then that much JSON whose
+// "__metadata__" holds the string metadata. Never touches the tensors.
+// Returns the metadata dict, null when the file is absent, and throws
+// when a file is there but is not a plausible mctx_v1 sidecar.
+async function readSidecarMeta(value) {
+    const route = viewRoute(value);
+    const r1 = await api.fetchApi(route,
+        { headers: { Range: "bytes=0-7" } });
+    if (r1.status === 404) return null;
+    // FileResponse honors Range; anything else risks pulling whole tensors
+    if (r1.status !== 206) throw new Error(`no ranged read (${r1.status})`);
+    const prefix = await r1.arrayBuffer();
+    if (prefix.byteLength < 8) throw new Error("too short for safetensors");
+    const length = Number(new DataView(prefix).getBigUint64(0, true));
+    if (length <= 0 || length > 10 * 1024 * 1024) {
+        throw new Error(`implausible header length ${length}`);
+    }
+    const r2 = await api.fetchApi(route,
+        { headers: { Range: `bytes=8-${8 + length - 1}` } });
+    if (r2.status !== 206) throw new Error(`no ranged read (${r2.status})`);
+    const meta = JSON.parse(await r2.text())?.__metadata__ ?? {};
+    if (meta.format !== MCTX_FORMAT) {
+        throw new Error(`format=${meta.format ?? "?"}`);
+    }
+    return meta;
+}
+
+const short = (id) => (id ? String(id).slice(0, 12) : "");
+
+function mctxTooltip(meta) {
+    const lines = [`mctx sidecar found (${meta.format})`,
+        `id ${short(meta.self_id)}`];
+    if (meta.parent_id) {
+        lines.push(`${meta.relation || "related to"} ${short(meta.parent_id)}`
+            + (meta.parent_join_frame !== undefined && meta.parent_join_frame !== ""
+                ? ` @ frame ${meta.parent_join_frame}` : ""));
+    } else {
+        lines.push("root clip (no parent)");
+    }
+    if (meta.width) {
+        lines.push(`${meta.width}x${meta.height} @ ${meta.fps}fps`);
+    }
+    if (meta.delivered_frames) {
+        lines.push(`${meta.delivered_frames} frames delivered`
+            + ` (${meta.raw_frames} raw, pinned ${meta.pinned_head_frames}`
+            + `+${meta.pinned_tail_frames})`);
+    }
+    lines.push("pairing hash is verified at load time");
+    return lines.join("\n");
 }
 
 app.registerExtension({
@@ -92,7 +157,54 @@ app.registerExtension({
             el.loop = true;
             el.muted = true; // autoplay policy; unmute via controls
             el.autoplay = true;
-            container.replaceChildren(el);
+
+            // Sidecar badge: does the selected clip have its mctx? The
+            // wrapper Vue component positions the widget element but does
+            // not set its inline position, so anchoring the container is
+            // safe -- the badge rides the video's top-left corner.
+            const badge = document.createElement("div");
+            Object.assign(badge.style, {
+                position: "absolute", top: "4px", left: "4px",
+                padding: "1px 7px", borderRadius: "9px",
+                font: "10px sans-serif", lineHeight: "16px",
+                background: "rgba(0,0,0,0.65)", color: "#fff",
+                zIndex: "1", whiteSpace: "pre",
+            });
+            badge.textContent = "";
+            if (!container.style.position) {
+                container.style.position = "relative";
+            }
+            container.replaceChildren(el, badge);
+
+            let badgeSeq = 0; // async probe guard (gotchas section 9)
+            async function updateBadge(value) {
+                const seq = ++badgeSeq;
+                // bright white text throughout; state lives in the bg color
+                const set = (text, bg, tip) => {
+                    if (seq !== badgeSeq) return;
+                    badge.textContent = text;
+                    badge.style.background = bg;
+                    badge.title = tip;
+                };
+                if (!value) return set("", "rgba(0,0,0,0.65)", "");
+                try {
+                    const meta = await readSidecarMeta(sidecarValue(value));
+                    if (meta) {
+                        set("mctx ✓", "rgba(30,110,50,0.85)",
+                            mctxTooltip(meta));
+                    } else {
+                        set("no mctx", "rgba(170,40,40,0.85)",
+                            "No .mctx.safetensors next to this clip.\n" +
+                            "Loads without latents (MCTX = None); extends " +
+                            "must go through the pixel route.");
+                    }
+                } catch (err) {
+                    dbg("sidecar probe failed for", value, err);
+                    set("mctx ?", "rgba(190,120,30,0.85)",
+                        "A sidecar file exists but is not a readable " +
+                        `mctx_v1 sidecar (${err?.message ?? err}).`);
+                }
+            }
 
             // Growable widget with aspect-derived minimums, exactly like
             // core's video preview: refreshed when a video loads, consumed
@@ -158,6 +270,34 @@ app.registerExtension({
             };
             container.addEventListener("pointerdown", forwardMiddle);
             container.addEventListener("pointermove", forwardMiddle);
+
+            // The container is a fixed-position DOM overlay ABOVE the
+            // canvas: file drags over it never reach the canvas element,
+            // so app.dragOverNode is never set and the node's classic
+            // onDragDrop path is dead wherever the preview covers the
+            // node (gotchas 12). Accept the drop here and route it to
+            // the same node API the canvas path uses.
+            // Accept both OS file drags and Artius-browser card drags
+            // (custom MIME, no File objects). Routing Artius drops here is
+            // a bonus: the overlay sits above the canvas, so Artius's own
+            // capture-phase canvas bridge (which spawns a LoadVideo node)
+            // never sees them either.
+            const ARTIUS_MIME = "application/x-timesaver-artius-asset";
+            const dropTargetsUs = (dt) =>
+                Array.from(dt?.types ?? []).includes(ARTIUS_MIME) ||
+                Array.from(dt?.items ?? []).some((i) => i.kind === "file");
+            container.addEventListener("dragover", (e) => {
+                if (dropTargetsUs(e.dataTransfer)) {
+                    e.preventDefault(); // permits dropping here
+                    e.stopPropagation();
+                }
+            });
+            container.addEventListener("drop", (e) => {
+                if (!dropTargetsUs(e.dataTransfer)) return;
+                e.preventDefault();  // document drop handler checks this
+                e.stopPropagation();
+                node.onDragDrop?.(e);
+            });
             if (DEBUG) {
                 el.addEventListener("click", () =>
                     dbg("video clicked; node", node.id, "size", [...node.size]));
@@ -177,6 +317,7 @@ app.registerExtension({
                     el.removeAttribute("src");
                     el.load();
                 }
+                void updateBadge(value);
             }
 
             // user changes: wrap-and-chain the combo callback...
