@@ -398,8 +398,6 @@ class H3MCtxApplyPins:
                                "authoritative for frame count and "
                                "resolution. Wire the same latent to the "
                                "sampler."}),
-                "pin_specs": ("PINSPECS", {
-                    "tooltip": "The spec stack from H3MCtxPinSpec."}),
                 "snap_window_down_to_available": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "When a source cannot supply the requested "
@@ -407,9 +405,23 @@ class H3MCtxApplyPins:
                                "instead of refusing. Off = refuse loudly; "
                                "snapping silently weakens continuity."}),
             },
+            "optional": {
+                "pin_specs": ("PINSPECS", {
+                    "tooltip": "The spec stack from H3MCtxPinSpec or a "
+                               "loader's create_pins output. Unconnected or "
+                               "empty = pass-through: the conditioning is "
+                               "returned untouched and pins is empty (a "
+                               "plain root generation), so the node can "
+                               "stay in the graph when not pinning."}),
+            },
         }
 
-    def apply(self, conditioning, latent, pin_specs, snap_window_down_to_available):
+    def apply(self, conditioning, latent, snap_window_down_to_available,
+              pin_specs=None):
+        if not pin_specs:
+            _LOG.info("obvpm.h3: no pin specs; conditioning passes through "
+                      "untouched (plain root generation)")
+            return (conditioning, [])
         for i, s in enumerate(pin_specs or []):
             if s.get("place") == "at_frame":
                 raise ValueError(
