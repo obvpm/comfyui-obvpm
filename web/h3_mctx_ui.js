@@ -552,8 +552,9 @@ app.registerExtension({
             strip.classList.add("obvpm-tl-strip");
             Object.assign(strip.style, {
                 display: "flex", gap: "3px", minHeight: "48px",
-                alignItems: "stretch", overflowX: "auto",
-                position: "relative", paddingBottom: "6px",
+                alignItems: "stretch", overflowX: "scroll",
+                position: "relative", paddingTop: "6px",
+                paddingBottom: "6px",
             });
             // insertion indicator for drag-reorder: a green I-beam in
             // the GAP the dragged clip would land in; hidden when the
@@ -583,7 +584,21 @@ app.registerExtension({
             }
             capT.style.top = "0";
             capB.style.bottom = "0";
-            dropLine.append(beam, capT, capB);
+            const nubL = document.createElement("div");
+            const nubR = document.createElement("div");
+            for (const nub of [nubL, nubR]) {
+                Object.assign(nub.style, {
+                    position: "absolute", top: "50%",
+                    transform: "translateY(-50%)",
+                    width: "7px", height: "7px",
+                    borderRadius: "50%", background: "#4d9960",
+                    boxShadow: "0 0 0 1px rgba(0,0,0,0.4)",
+                    display: "none",
+                });
+            }
+            nubL.style.left = "-5px";
+            nubR.style.right = "-5px";
+            dropLine.append(beam, capT, capB, nubL, nubR);
             let dragFrom = null;      // index being dragged
             let dropInsertAt = null;  // insertion index in the gap
             const playhead = document.createElement("div");
@@ -610,16 +625,27 @@ app.registerExtension({
                 // dark chrome with light text in BOTH themes, but
                 // tuned per ground: lighter on a light page, darker
                 // on a dark one; buttons/picker share it
-                return light ? {
-                    rest: "#3d434e", text: "#e8eaee", sub: "#aab1bc",
+                if (light) {
+                    return {
+                        rest: "#3d434e", text: "#e8eaee",
+                        sub: "#aab1bc",
+                        active: "#1f4390", activeText: "#e8eaee",
+                        edge: "#59606c", tick: "#6a707a",
+                        tickLine: "#b6bac3", stripBg: "#c9ccd3",
+                        drop: "#454b55",
+                    };
+                }
+                // dark: derive everything from the theme's input
+                // surface with color-mix(); var() resolves at paint
+                // time, so palette swaps restyle the widget live
+                const base = "var(--comfy-input-bg, #17191f)";
+                return {
+                    rest: base, text: "#e8eaee", sub: "#9aa1ac",
                     active: "#1f4390", activeText: "#e8eaee",
-                    edge: "#59606c", tick: "#6a707a", tickLine: "#b6bac3",
-                    stripBg: "#c9ccd3",
-                } : {
-                    rest: "#262a31", text: "#e8eaee", sub: "#9aa1ac",
-                    active: "#1f4390", activeText: "#e8eaee",
-                    edge: "#383d46", tick: "#9aa1ac", tickLine: "#3a3f48",
-                    stripBg: "#17191f",
+                    edge: `color-mix(in srgb, ${base} 80%, white)`,
+                    tick: "#9aa1ac", tickLine: "#3a3f48",
+                    stripBg: `color-mix(in srgb, ${base} 55%, black)`,
+                    drop: "#d7dbe2",
                 };
             }
             let PAL = themePalette();
@@ -632,6 +658,9 @@ app.registerExtension({
                 timelineWrap.style.background = PAL.stripBg;
                 timelineWrap.style.borderRadius = "4px";
                 timelineWrap.style.padding = "3px";
+                for (const el of [beam, capT, capB]) {
+                    el.style.background = PAL.drop;
+                }
             }
             applyChrome();
 
@@ -705,6 +734,20 @@ app.registerExtension({
             const rulerRO = new ResizeObserver(
                 () => requestAnimationFrame(drawRuler));
             rulerRO.observe(timelineWrap);
+            let wasLightTick = null;
+            const themeMO = new MutationObserver(() => {
+                const next = themePalette();
+                if (next.tick === (wasLightTick ?? PAL.tick) &&
+                    next.rest === PAL.rest) return;
+                wasLightTick = next.tick;
+                PAL = next;
+                applyChrome();
+                void refresh(); // reskin blocks/pills/popup chrome
+            });
+            for (const t of [document.documentElement, document.body]) {
+                themeMO.observe(t, { attributes: true,
+                    attributeFilter: ["class", "style", "data-theme"] });
+            }
             strip.addEventListener("scroll",
                 () => requestAnimationFrame(drawRuler));
 
@@ -1218,7 +1261,7 @@ app.registerExtension({
                         background: hasLink
                             ? TL_COLORS[e.seam.kind] : PAL.sub,
                         boxShadow: "0 0 0 2px rgba(0,0,0,0.35)",
-                        opacity: hasLink ? "1" : "0",
+                        opacity: hasLink ? "1" : "0.35",
                         transition: "opacity 0.1s, height 0.1s",
                         pointerEvents: "none",
                     });
@@ -1233,7 +1276,7 @@ app.registerExtension({
                         });
                         zone.addEventListener("mouseleave", () => {
                             pill.style.height = "6px";
-                            if (!hasLink) pill.style.opacity = "0";
+                            if (!hasLink) pill.style.opacity = "0.35";
                         });
                         zone.addEventListener("click", (ev) => {
                             ev.stopPropagation();
@@ -1250,11 +1293,15 @@ app.registerExtension({
                 const R = entries[i];
                 const pop = document.createElement("div");
                 seamPopup = pop;
+                const stripTop = timelineWrap.offsetTop +
+                    strip.offsetTop;
                 Object.assign(pop.style, {
                     position: "absolute", zIndex: "10",
-                    left: Math.max(0,
-                        x - strip.scrollLeft - 110) + "px",
-                    top: (strip.offsetTop + strip.offsetHeight + 2)
+                    left: Math.max(0, Math.min(
+                        timelineWrap.offsetLeft + 3 + x -
+                            strip.scrollLeft - 110,
+                        container.clientWidth - 240)) + "px",
+                    bottom: (container.clientHeight - stripTop + 2)
                         + "px",
                     minWidth: "220px", maxWidth: "320px",
                     maxHeight: "190px", overflowY: "auto",
@@ -1267,7 +1314,7 @@ app.registerExtension({
                 pop.addEventListener("click",
                     (ev) => ev.stopPropagation());
                 pop.textContent = "scanning clips…";
-                timelineWrap.appendChild(pop);
+                container.appendChild(pop);
                 setTimeout(() => document.addEventListener("click",
                     closeSeamPopup, { once: true }), 0);
 
@@ -1463,6 +1510,7 @@ app.registerExtension({
                     const mbadge = document.createElement("span");
                     Object.assign(mbadge.style, {
                         display: "inline-block", padding: "0 6px",
+                        whiteSpace: "nowrap",
                         borderRadius: "8px", textAlign: "center",
                         background: e.meta ? "rgba(30,110,50,0.85)"
                                            : "rgba(170,40,40,0.85)",
@@ -1523,6 +1571,18 @@ app.registerExtension({
                             return;
                         }
                         dropInsertAt = j;
+                        // would dropping here LINK with either neighbor?
+                        const dragged = entries[dragFrom];
+                        const linkL = j > 0 && linkedMeta(
+                            entries[j - 1]?.meta, dragged?.meta);
+                        const linkR = j < entries.length && linkedMeta(
+                            dragged?.meta, entries[j]?.meta);
+                        nubL.style.display = linkL ? "block" : "none";
+                        nubR.style.display = linkR ? "block" : "none";
+                        dropLine.title = linkL || linkR
+                            ? "will link " + [linkL && "with left",
+                                linkR && "with right"]
+                                .filter(Boolean).join(" and ") : "";
                         const cx = before
                             ? block.offsetLeft - 1.5
                             : block.offsetLeft + block.offsetWidth + 1.5;
@@ -1582,6 +1642,7 @@ app.registerExtension({
             node.onRemoved = function () {
                 cancelAnimationFrame(rafId);
                 rulerRO.disconnect();
+                themeMO.disconnect();
                 for (const v of vids) {
                     v.pause();
                     v.removeAttribute("src");
