@@ -361,10 +361,14 @@ def _prepare_clip_pin(i, spec, snap_down):
             "source_id": bundle.get("self_id", ""),
             # the AUTHORITATIVE resolved spec: source range recomputed from
             # the actually-sliced window (snap_down may have shrunk it), so
-            # downstream trim/save read what really happened
+            # downstream trim/save read what really happened. source_start
+            # is in the source's RAW coordinates -- that is what the
+            # sidecar recipe means (summarize_pins derives parent_join_
+            # frame from it, seam_report slices the raw latent with it);
+            # the delivered-based d_start only equals it for root sources.
             "spec": dict(
                 {k: v for k, v in spec.items() if k != "source"},
-                source_start=d_start,
+                source_start=raw_start,
                 source_frames=n,
             ),
         }

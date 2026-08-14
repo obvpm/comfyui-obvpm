@@ -364,6 +364,11 @@ const TL_FPS = 24;
 const TL_DRAG_MIME = "application/x-obvpm-timeline-index";
 const TL_PICKER_CLASS = "H3LoadVideoWithMCtx"; // combo lists the output tree
 const TL_COLORS = { seamless: "#4d9960", cut: "#c9973b", butt: "#a4aab4" };
+// sibling-widget channel: Timeline nodes register {folder, offer,
+// forget} here so the Result Preview can hand them a good take or
+// report a deleted one. Frontend-only on purpose -- the graph stays
+// unwired, the Timeline stays outside execution.
+const TL_REGISTRY = new Map();
 
 function tldbg(...args) {
     console.log("[obvpm-h3-timeline]", ...args);
@@ -493,6 +498,56 @@ function tlAlpha(color, a) {
     return m ? `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})` : c;
 }
 
+function themePalette() {
+    let light = false;
+    try {
+        const bg = getComputedStyle(document.body)
+            .backgroundColor.match(/\d+/g);
+        if (bg) {
+            const [r, g, b] = bg.map(Number);
+            light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+        }
+    } catch { /* default dark */ }
+    // dark chrome with light text in BOTH themes, but
+    // tuned per ground: lighter on a light page, darker
+    // on a dark one; buttons/picker share it
+    if (light) {
+        // same theme-variable derivation as dark mode:
+        // surfaces follow the palette's input color, with
+        // dark ink and darker mixes for edges/panel
+        const lb = "var(--comfy-input-bg, #dfe2e8)";
+        return {
+            rest: lb, text: "#23262b", sub: "#5c6270",
+            active: "#3557b0", activeText: "#f2f4f8",
+            edge: tlDarken(tlCssVar(
+                "--comfy-input-bg", "#dfe2e8"), 0.76),
+            tick: "#6a707a", tickLine: "#b6bac3",
+            // the theme's own panel color, not a
+            // black-mix (mixing black into a light color
+            // makes mud, not shade)
+            stripBg: tlAlpha(tlCssVar(
+                "--comfy-input-bg", "#dfe2e8"), 0.4),
+            drop: "#454b55",
+        };
+    }
+    // dark: surfaces follow the theme's input color; the
+    // derived shades (edge/panel) are computed in JS at
+    // palette time, not with CSS color functions
+    const base = "var(--comfy-input-bg, #17191f)";
+    return {
+        rest: base, text: "#e8eaee", sub: "#9aa1ac",
+        active: "#1f4390", activeText: "#e8eaee",
+        edge: tlDarken(tlCssVar(
+            "--comfy-input-bg", "#17191f"), 1.6),
+        tick: "#9aa1ac", tickLine: "#3a3f48",
+        // the clip bars' surface at half opacity; the
+        // node body blends through
+        stripBg: tlAlpha(
+            tlCssVar("--comfy-input-bg", "#17191f"), 0.4),
+        drop: "#d7dbe2",
+    };
+}
+
 const tlMetaCache = new Map();
 async function tlClipMeta(clip) {
     if (!tlMetaCache.has(clip)) {
@@ -598,6 +653,12 @@ app.registerExtension({
             Object.assign(pickerRow.style,
                 { display: "flex", gap: "6px", alignItems: "center" });
             pickerRow.append(picker, addBtn);
+            // fresh-clip chips appear here after a run finishes
+            const chipRow = document.createElement("div");
+            Object.assign(chipRow.style, {
+                display: "none", flexWrap: "wrap", gap: "4px",
+                alignItems: "center",
+            });
 
             // ---- ruler + timeline strip + playhead --------------------
             const timelineWrap = document.createElement("div");
@@ -675,55 +736,6 @@ app.registerExtension({
             // Theme-aware strip palette: one hardcoded set cannot serve
             // both Comfy themes (dark blocks read as black holes on a
             // light page). Luminance of the page background decides.
-            function themePalette() {
-                let light = false;
-                try {
-                    const bg = getComputedStyle(document.body)
-                        .backgroundColor.match(/\d+/g);
-                    if (bg) {
-                        const [r, g, b] = bg.map(Number);
-                        light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
-                    }
-                } catch { /* default dark */ }
-                // dark chrome with light text in BOTH themes, but
-                // tuned per ground: lighter on a light page, darker
-                // on a dark one; buttons/picker share it
-                if (light) {
-                    // same theme-variable derivation as dark mode:
-                    // surfaces follow the palette's input color, with
-                    // dark ink and darker mixes for edges/panel
-                    const lb = "var(--comfy-input-bg, #dfe2e8)";
-                    return {
-                        rest: lb, text: "#23262b", sub: "#5c6270",
-                        active: "#3557b0", activeText: "#f2f4f8",
-                        edge: tlDarken(tlCssVar(
-                            "--comfy-input-bg", "#dfe2e8"), 0.76),
-                        tick: "#6a707a", tickLine: "#b6bac3",
-                        // the theme's own panel color, not a
-                        // black-mix (mixing black into a light color
-                        // makes mud, not shade)
-                        stripBg: tlAlpha(tlCssVar(
-                            "--comfy-input-bg", "#dfe2e8"), 0.4),
-                        drop: "#454b55",
-                    };
-                }
-                // dark: surfaces follow the theme's input color; the
-                // derived shades (edge/panel) are computed in JS at
-                // palette time, not with CSS color functions
-                const base = "var(--comfy-input-bg, #17191f)";
-                return {
-                    rest: base, text: "#e8eaee", sub: "#9aa1ac",
-                    active: "#1f4390", activeText: "#e8eaee",
-                    edge: tlDarken(tlCssVar(
-                        "--comfy-input-bg", "#17191f"), 1.6),
-                    tick: "#9aa1ac", tickLine: "#3a3f48",
-                    // the clip bars' surface at half opacity; the
-                    // node body blends through
-                    stripBg: tlAlpha(
-                        tlCssVar("--comfy-input-bg", "#17191f"), 0.4),
-                    drop: "#d7dbe2",
-                };
-            }
             let PAL = themePalette();
             function applyChrome() {
                 for (const el of [picker, addBtn, quickBtn, fullBtn]) {
@@ -883,7 +895,8 @@ app.registerExtension({
                 });
                 return v;
             });
-            container.append(videoWrap, header, timelineWrap, pickerRow);
+            container.append(videoWrap, header, timelineWrap, chipRow,
+                             pickerRow);
             videoWrap.append(...vids);
 
             const widget = node.addDOMWidget("mctx_timeline", "div",
@@ -967,6 +980,7 @@ app.registerExtension({
 
             // ---- preview playback -------------------------------------
             let playlist = [];
+            let lastPlaylistSig = "";
             let playIdx = -1;
             let act = 0;      // which of the two videos is on screen
             let rafId = null;
@@ -1599,11 +1613,23 @@ app.registerExtension({
                 playlist = entries.map((e) => ({
                     clip: e.clip, enter: e.enter, exit: e.exit,
                 }));
-                // the sequence changed: previous single file no longer
-                // matches; re-probe whether a cached build exists for it
-                single = null;
-                usingSingle = false;
-                setPlayhead(null);
+                // Only a CONTENT change invalidates playback state (a
+                // theme flip re-runs refresh too, and must not). The
+                // loaded twin <video>s and playIdx belong to the old
+                // playlist -- without this, resuming after an edit plays
+                // the stale chain until a seek forces a reload.
+                const playlistSig = JSON.stringify(playlist);
+                if (playlistSig !== lastPlaylistSig) {
+                    lastPlaylistSig = playlistSig;
+                    single = null;
+                    usingSingle = false;
+                    for (const v of vids) {
+                        v.pause();
+                        v._item = null;
+                    }
+                    playIdx = -1;
+                    setPlayhead(null);
+                }
                 PAL = themePalette();
                 applyChrome();
                 cumStarts = [];
@@ -1662,10 +1688,25 @@ app.registerExtension({
                         const b = document.createElement("button");
                         b.textContent = label;
                         b.title = title;
+                        // highlight() swaps the block's text color per
+                        // state (light-mode active is dark blue + light
+                        // ink, resting is light + dark ink), so the
+                        // controls INHERIT it for contrast in every
+                        // combination: dimmed at rest, full + a neutral
+                        // pill on hover
                         Object.assign(b.style, {
                             background: "none", border: "none",
-                            color: PAL.sub, cursor: "pointer",
+                            color: "inherit", opacity: "0.7",
+                            cursor: "pointer", borderRadius: "3px",
                             padding: "0 2px", font: "11px sans-serif",
+                        });
+                        b.addEventListener("mouseenter", () => {
+                            b.style.opacity = "1";
+                            b.style.background = "rgba(127,127,127,0.3)";
+                        });
+                        b.addEventListener("mouseleave", () => {
+                            b.style.opacity = "0.7";
+                            b.style.background = "none";
                         });
                         b.addEventListener("click", (ev) => {
                             ev.stopPropagation();
@@ -1780,6 +1821,11 @@ app.registerExtension({
                 highlight(playIdx);
                 // ruler + link geometry depend on freshly laid-out blocks
                 lastEntries = entries;
+                // chips whose clip made it into the sequence are done;
+                // the rest re-aim against the new entry list
+                pendingNew = pendingNew.filter(
+                    (p) => !entries.some((e) => e.clip === p.clip));
+                renderChips();
                 requestAnimationFrame(() => {
                     drawRuler();
                     drawLinks(entries);
@@ -1811,6 +1857,8 @@ app.registerExtension({
                 cancelAnimationFrame(rafId);
                 rulerRO.disconnect();
                 themeMO.disconnect();
+                api.removeEventListener("execution_success", onRunDone);
+                TL_REGISTRY.delete(node.id);
                 for (const v of vids) {
                     v.pause();
                     v.removeAttribute("src");
@@ -1831,8 +1879,13 @@ app.registerExtension({
                     String(widgetValue("preview_filename",
                                        "obvpm_h3_preview")).trim() +
                     ".mp4";
+                // hide our own working files (this node's preview under
+                // its configured name, and any obvpm_h3_* preview file
+                // other nodes drop beside the clips)
                 const shown = allPickerClips.filter((c) =>
-                    c !== pv && (!folder || c.startsWith(folder + "/")));
+                    c !== pv &&
+                    !c.split("/").pop().startsWith("obvpm_h3_") &&
+                    (!folder || c.startsWith(folder + "/")));
                 picker.replaceChildren(...shown.map((c) => {
                     const o = document.createElement("option");
                     o.value = o.textContent = c;
@@ -1853,8 +1906,604 @@ app.registerExtension({
                     return r;
                 };
             }
+            // ---- new-clip detection -------------------------------------
+            // A finished run may have dropped a fresh take into
+            // base_folder. Rescan (the same /object_info call the picker
+            // uses re-runs INPUT_TYPES server-side, so the list is live),
+            // diff against what we knew, and offer every new mctx clip as
+            // a chip pre-aimed by its lineage. With auto_add on, the one
+            // unambiguous case -- the new clip extends the clip currently
+            // at the END of the timeline -- is appended silently;
+            // prepends, branches and roots stay chip-only.
+            let pendingNew = [];        // [{clip, meta}]
+            const offeredClips = new Set();
+            function clipBase(c) { return c.split("/").pop(); }
+            function aimFor(p) {
+                const m = p.meta;
+                let k = -1;
+                if (m.relation === "extends" || m.relation === "prepends") {
+                    k = lastEntries.findIndex(
+                        (e) => e.meta && e.meta.self_id === m.parent_id);
+                }
+                if (k >= 0 && m.relation === "extends") {
+                    return { at: k + 1, parentIdx: k,
+                             label: "after " + clipBase(lastEntries[k].clip),
+                             tail: k === lastEntries.length - 1 };
+                }
+                if (k >= 0 && m.relation === "prepends") {
+                    return { at: k, parentIdx: k,
+                             label: "before " + clipBase(lastEntries[k].clip),
+                             tail: false };
+                }
+                return { at: lastEntries.length, parentIdx: -1,
+                         label: "at the end", tail: false };
+            }
+            function insertEntryAt(idx, clip) {
+                const ls = currentLines();
+                const map = entryLines();
+                const at = idx >= map.length ? ls.length : map[idx];
+                ls.splice(at, 0, clip);
+                setSequence(ls.join("\n"));
+            }
+            function replaceEntry(idx, clip) {
+                const ls = currentLines();
+                ls[entryLines()[idx]] = clip;
+                setSequence(ls.join("\n"));
+            }
+            // Insert at the lineage-aimed position -- but when that seam
+            // is already occupied by an earlier take of the SAME
+            // continuation (same relation, same parent, same join
+            // frame), the new take replaces it. Deliberately strict: a
+            // merely-linked neighbor (the parent's own prepend, an
+            // extend at a different cut point) is a different seam and
+            // must not be clobbered.
+            function placeClip(clip, meta) {
+                const aim = aimFor({ clip, meta });
+                const sameSeam = (occ) => occ?.meta && meta &&
+                    occ.meta.relation === meta.relation &&
+                    occ.meta.parent_id === meta.parent_id &&
+                    String(occ.meta.parent_join_frame ?? "") ===
+                        String(meta.parent_join_frame ?? "");
+                if (aim.parentIdx >= 0) {
+                    const occIdx = meta.relation === "extends"
+                        ? aim.parentIdx + 1 : aim.parentIdx - 1;
+                    const occ = lastEntries[occIdx];
+                    if (sameSeam(occ)) {
+                        replaceEntry(occIdx, clip);
+                        return "replaced " + clipBase(occ.clip) +
+                            " (same seam)";
+                    }
+                }
+                insertEntryAt(aim.at, clip);
+                return "inserted " + aim.label;
+            }
+            function renderChips() {
+                chipRow.replaceChildren();
+                for (const p of pendingNew) {
+                    const aim = aimFor(p);
+                    const chip = document.createElement("span");
+                    Object.assign(chip.style, {
+                        display: "inline-flex", alignItems: "center",
+                        gap: "5px", padding: "2px 7px",
+                        borderRadius: "9px", cursor: "pointer",
+                        font: "11px sans-serif", whiteSpace: "nowrap",
+                        background: PAL.rest, color: PAL.text,
+                        border: "1px dashed " + PAL.edge,
+                    });
+                    const label = document.createElement("span");
+                    label.textContent =
+                        "+ " + clipBase(p.clip) + " · " + aim.label;
+                    label.title = p.clip + " — new take from the last "
+                        + "run; click to insert " + aim.label;
+                    const dismiss = document.createElement("span");
+                    dismiss.textContent = "✕";
+                    dismiss.title = "Dismiss";
+                    Object.assign(dismiss.style,
+                        { opacity: "0.55", cursor: "pointer" });
+                    dismiss.addEventListener("click", (ev) => {
+                        ev.stopPropagation();
+                        pendingNew = pendingNew.filter((q) => q !== p);
+                        renderChips();
+                    });
+                    chip.addEventListener("click", () => {
+                        pendingNew = pendingNew.filter((q) => q !== p);
+                        tldbg(placeClip(p.clip, p.meta) + ":", p.clip);
+                    });
+                    chip.append(label, dismiss);
+                    chipRow.appendChild(chip);
+                }
+                chipRow.style.display =
+                    pendingNew.length ? "flex" : "none";
+            }
+            async function detectNewClips() {
+                const fresh = await tlFetchClipList();
+                const known = new Set(allPickerClips);
+                allPickerClips = fresh;
+                populatePicker();
+                const folder = String(widgetValue("base_folder", ""))
+                    .trim().replace(/^\/+|\/+$/g, "");
+                const pv = (folder ? folder + "/" : "") +
+                    String(widgetValue("preview_filename",
+                                       "obvpm_h3_preview")).trim() + ".mp4";
+                const found = fresh.filter((c) =>
+                    !known.has(c) && !offeredClips.has(c) && c !== pv &&
+                    !c.split("/").pop().startsWith("obvpm_h3_") &&
+                    (!folder || c.startsWith(folder + "/")));
+                tldbg("run finished: list has", fresh.length,
+                      "clips,", found.length, "new in scope",
+                      folder ? `(folder ${folder})` : "(unscoped)");
+                if (!found.length) return;
+                let changed = false;
+                for (const c of found) {
+                    offeredClips.add(c);
+                    const meta = await tlClipMeta(c);
+                    if (!meta) continue;    // no sidecar: not a take
+                    if (lastEntries.some((e) => e.clip === c)) continue;
+                    const p = { clip: c, meta };
+                    if (widgetValue("auto_add", false) && aimFor(p).tail) {
+                        tldbg("auto-add:", placeClip(c, meta), c);
+                        continue;
+                    }
+                    pendingNew.push(p);
+                    changed = true;
+                    tldbg("new clip chip:", c, "→", aimFor(p).label);
+                }
+                if (changed) renderChips();
+            }
+            const onRunDone = () => void detectNewClips();
+            api.addEventListener("execution_success", onRunDone);
+
+            TL_REGISTRY.set(node.id, {
+                folder: () => String(widgetValue("base_folder", ""))
+                    .trim().replace(/^\/+|\/+$/g, ""),
+                has: (clip) => lastEntries.some((e) => e.clip === clip),
+                offer: async (clip) => {
+                    if (lastEntries.some((e) => e.clip === clip)) {
+                        return "already in the timeline";
+                    }
+                    const meta = await tlClipMeta(clip);
+                    return placeClip(clip, meta);
+                },
+                forget: (clip) => {
+                    pendingNew = pendingNew.filter((p) => p.clip !== clip);
+                    renderChips();
+                    offeredClips.delete(clip); // a reused name is new again
+                    allPickerClips = allPickerClips.filter(
+                        (c) => c !== clip);
+                    populatePicker();
+                    const idx = lastEntries.findIndex(
+                        (e) => e.clip === clip);
+                    if (idx >= 0) removeEntry(idx);
+                },
+            });
+
             void refresh();
             return result;
         }
     },
 });
+
+// ================= H3ResultPreview: mini lineage timeline =============
+// A run finishes -> the Python node returns {clip, parent, relation,
+// sequence} -> this widget shows the pair as two blocks with the seam
+// pill between them and plays the sequence as ONE server-built smart
+// cut (the same /obvpm/h3/preview_cut the Timeline uses, its own
+// preview file). The payload rides node.properties so it survives a
+// workflow save/reload.
+const RP_NODE = "H3ResultPreview";
+const RP_PREVIEW_NAME = "obvpm_h3_result";
+
+app.registerExtension({
+    name: "obvpm.h3_mctx_result",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name !== RP_NODE) return;
+        const onNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const result = onNodeCreated?.apply(this, arguments);
+            try {
+                buildResultPreview(this);
+            } catch (err) {
+                console.error("[obvpm-h3-result] widget build FAILED:",
+                              err);
+            }
+            return result;
+        };
+        const onExecuted = nodeType.prototype.onExecuted;
+        nodeType.prototype.onExecuted = function (message) {
+            const r = onExecuted?.apply(this, arguments);
+            const d = message?.h3_result?.[0];
+            if (d) this._h3ShowResult?.(d);
+            return r;
+        };
+    },
+});
+
+function buildResultPreview(node) {
+    let PAL = themePalette();
+
+    const container = document.createElement("div");
+    Object.assign(container.style, {
+        display: "flex", flexDirection: "column", gap: "5px",
+        font: "12px sans-serif", overflow: "hidden",
+    });
+
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    Object.assign(video.style, {
+        width: "100%", flex: "1", minHeight: "0",
+        objectFit: "contain", borderRadius: "4px", display: "none",
+    });
+
+    const strip = document.createElement("div");
+    Object.assign(strip.style, {
+        display: "none", gap: "4px", alignItems: "stretch",
+    });
+
+    const status = document.createElement("div");
+    Object.assign(status.style, {
+        font: "11px sans-serif", color: PAL.sub,
+        whiteSpace: "nowrap", overflow: "hidden",
+        textOverflow: "ellipsis",
+    });
+    status.textContent = "run a generation to see its result here";
+
+    const btnRow = document.createElement("div");
+    Object.assign(btnRow.style,
+        { display: "none", gap: "6px", alignItems: "center" });
+    const rpBtn = (label, title) => {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.title = title;
+        Object.assign(b.style, {
+            background: PAL.rest, color: PAL.text,
+            border: "1px solid " + PAL.edge, borderRadius: "4px",
+            padding: "2px 8px", cursor: "pointer",
+            // explicit line-height: the ✕ glyph renders taller than
+            // latin text and would otherwise grow its button
+            font: "11px/16px sans-serif",
+        });
+        return b;
+    };
+    const addTlBtn = rpBtn("+ add to timeline",
+        "Insert this take into the Timeline node at its "
+        + "lineage-derived position");
+    // the accept action is green like the take it accepts
+    Object.assign(addTlBtn.style, {
+        background: "#2e7d4f", color: "#f0f6f1",
+        borderColor: "#1f5c38",
+    });
+    const delBtn = rpBtn("✕ delete",
+        "Delete this take (MP4 + sidecar) -- for rejected seeds");
+    btnRow.append(addTlBtn, delBtn);
+
+    container.append(video, strip, btnRow, status);
+    const widget = node.addDOMWidget("mctx_result", "div", container,
+                                     { hideOnZoom: false });
+    widget.serialize = false;
+    widget.options.serialize = false;
+    widget.computeLayoutSize = () => ({ minHeight: 220, minWidth: 240 });
+    Object.defineProperty(widget, "width", {
+        configurable: true, get: () => undefined, set: () => {},
+    });
+
+    let starts = [];
+    let reqSeq = 0;
+    let blockEls = [];
+    // which clip is on screen: amber outline follows the playhead
+    // (outline, not background -- the green identity of "this run"
+    // must survive being the active block)
+    video.addEventListener("timeupdate", () => {
+        if (!blockEls.length || !starts.length) return;
+        const f = video.currentTime * TL_FPS;
+        let idx = 0;
+        starts.forEach((s, k) => {
+            if (f >= s - 0.5) idx = k;
+        });
+        blockEls.forEach((b, k) => {
+            // inset shadow, not outline: outlines paint OUTSIDE the
+            // element and the strip's edges clip them
+            b.style.boxShadow = k === idx
+                ? "inset 0 0 0 2px " + TL_COLORS.cut : "none";
+        });
+    });
+    function block(label, sub, k, isNew) {
+        const b = document.createElement("div");
+        Object.assign(b.style, {
+            flex: "1", minWidth: "0", padding: "3px 7px",
+            borderRadius: "4px", cursor: "pointer",
+            overflow: "hidden",
+            // the run's own take is green so the eye lands on it
+            background: isNew ? "#2e7d4f" : PAL.rest,
+            color: isNew ? "#f0f6f1" : PAL.text,
+            border: "1px solid " + (isNew ? "#1f5c38" : PAL.edge),
+        });
+        const nm = document.createElement("div");
+        Object.assign(nm.style, {
+            font: "600 11px sans-serif", whiteSpace: "nowrap",
+            overflow: "hidden", textOverflow: "ellipsis",
+        });
+        nm.textContent = label.split("/").pop();
+        nm.title = label;
+        const s = document.createElement("div");
+        Object.assign(s.style, {
+            font: (isNew ? "bold " : "") + "10px sans-serif",
+            opacity: isNew ? "0.9" : "0.65",
+        });
+        s.textContent = sub;
+        b.append(nm, s);
+        b.addEventListener("click", () => {
+            if (video.src && starts[k] !== undefined) {
+                video.currentTime = starts[k] / TL_FPS;
+                void video.play().catch(() => {});
+            }
+        });
+        return b;
+    }
+
+    let current = null;
+    async function render(d) {
+        PAL = themePalette();
+        current = d;
+        const seq = ++reqSeq;
+        blockEls = [];
+        strip.replaceChildren();
+        strip.style.display = "flex";
+        btnRow.style.display = "flex";
+        updateActionBtns();
+        video.style.display = "none";
+        status.style.color = PAL.sub;
+        status.textContent = "building preview…";
+
+        // blocks + seam pill from the sidecars (order matches sequence)
+        const clips = d.sequence.split("\n");
+        const metas = await Promise.all(clips.map((c) => tlClipMeta(c)));
+        if (seq !== reqSeq) return;
+        clips.forEach((c, k) => {
+            if (k > 0) {
+                // pill = the RELATION; under it the MEASURED verdict
+                // (latent step-diff at the boundary), which beats the
+                // metadata one: coordinates lining up only means the
+                // join is where it claims, not that motion flows
+                // through it
+                const s = tlDeriveSeam(metas[k - 1], metas[k]);
+                const colors = { "seamless": TL_COLORS.seamless,
+                                 "soft bump": TL_COLORS.cut,
+                                 "hard cut": "#b3403c" };
+                const wrap = document.createElement("div");
+                Object.assign(wrap.style, {
+                    display: "flex", flexDirection: "column",
+                    alignItems: "center", alignSelf: "center",
+                    gap: "2px",
+                });
+                const relText = (d.relation === "extends" ||
+                                 d.relation === "prepends")
+                    ? d.relation : "no link";
+                // relation label wears the clip bars' chrome, smaller —
+                // and when the measured seam is SEAMLESS it turns the
+                // same green as the "this run" block; the verdict text
+                // below still carries the exact number
+                const good = d.seam?.verdict === "seamless";
+                const pill = document.createElement("span");
+                Object.assign(pill.style, {
+                    padding: "1px 6px", borderRadius: "4px",
+                    background: good ? "#2e7d4f" : PAL.rest,
+                    color: good ? "#f0f6f1" : PAL.text,
+                    border: "1px solid " + (good ? "#1f5c38" : PAL.edge),
+                    font: "600 9px sans-serif", whiteSpace: "nowrap",
+                });
+                pill.textContent = relText;
+                pill.title = s.note;
+                if (d.seam) {
+                    const v = document.createElement("span");
+                    Object.assign(v.style, {
+                        font: "9px sans-serif", whiteSpace: "nowrap",
+                        color: colors[d.seam.verdict] ?? PAL.sub,
+                    });
+                    v.textContent =
+                        `${d.seam.ratio}x ${d.seam.verdict}`;
+                    v.title = "measured at the generated↔pinned "
+                        + "boundary (ratio of the clip's median motion)";
+                    wrap.append(pill, v);
+                } else {
+                    wrap.append(pill);
+                }
+                strip.appendChild(wrap);
+            }
+            const role = clips.length === 1 ? "alone"
+                : (c === d.clip ? "this run" : "lineage");
+            const bEl = block(c, role, k, c === d.clip);
+            blockEls.push(bEl);
+            strip.appendChild(bEl);
+        });
+
+        try {
+            const resp = await api.fetchApi("/obvpm/h3/preview_cut", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sequence: d.sequence, crf: 23,
+                    base_folder: d.clip.includes("/")
+                        ? d.clip.slice(0, d.clip.lastIndexOf("/")) : "",
+                    preview_filename: RP_PREVIEW_NAME,
+                }),
+            });
+            if (!resp.ok) throw new Error(await resp.text());
+            const r = await resp.json();
+            if (seq !== reqSeq) return;
+            starts = r.starts;
+            video.src = api.apiURL(
+                `/view?filename=${encodeURIComponent(r.filename)}` +
+                `&subfolder=${encodeURIComponent(r.subfolder)}` +
+                `&type=${encodeURIComponent(r.type ?? "output")}` +
+                `&v=${encodeURIComponent(r.v ?? "")}`);
+            video.style.display = "block";
+            // the strip already says who relates to whom and how well;
+            // the status line only speaks when something is off
+            status.textContent = d.parent ? ""
+                : `${d.clip.split("/").pop()} (no lineage in folder)`;
+        } catch (err) {
+            if (seq !== reqSeq) return;
+            status.style.color = "#de5b5b";
+            status.textContent = "preview failed: " +
+                String(err?.message ?? err).slice(0, 120);
+        }
+        node.graph?.setDirtyCanvas(true);
+    }
+
+    function applyRpChrome() {
+        // addTlBtn keeps its green in every theme
+        delBtn.style.background = PAL.rest;
+        delBtn.style.borderColor = PAL.edge;
+        delBtn.style.color = PAL.text;
+        status.style.color = PAL.sub;
+    }
+    // live theme following, same pattern as the Timeline: debounced
+    // whole-palette compare (the var() strings alone never change)
+    let rpThemeTimer = null;
+    const rpThemeMO = new MutationObserver(() => {
+        clearTimeout(rpThemeTimer);
+        rpThemeTimer = setTimeout(() => {
+            const next = themePalette();
+            if (JSON.stringify(next) === JSON.stringify(PAL)) return;
+            PAL = next;
+            applyRpChrome();
+            if (current) void render(current);
+        }, 150);
+    });
+    for (const t of [document.documentElement, document.body]) {
+        rpThemeMO.observe(t, { attributes: true,
+            attributeFilter: ["class", "style", "data-theme"] });
+    }
+
+    // a running generation shows a live elapsed clock in the status
+    // line until its result (or failure) takes the line over
+    let runStartedAt = null;
+    let runTimer = null;
+    function runTick() {
+        if (runStartedAt === null) return;
+        const s = Math.floor((Date.now() - runStartedAt) / 1000);
+        status.style.color = PAL.sub;
+        status.textContent = "new generation running… " +
+            Math.floor(s / 60) + ":" +
+            String(s % 60).padStart(2, "0");
+    }
+    const onRunStart = () => {
+        runStartedAt = Date.now();
+        clearInterval(runTimer);
+        runTimer = setInterval(runTick, 1000);
+        runTick();
+    };
+    const onRunEnd = () => {
+        runStartedAt = null;
+        clearInterval(runTimer);
+        runTimer = null;
+        // the result's own render overwrites the line; failures and
+        // interrupts just stop the clock
+        if (status.textContent.startsWith("new generation running")) {
+            status.textContent = "";
+        }
+    };
+    api.addEventListener("execution_start", onRunStart);
+    api.addEventListener("execution_success", onRunEnd);
+    api.addEventListener("execution_error", onRunEnd);
+    api.addEventListener("execution_interrupted", onRunEnd);
+
+    function tlMatchesFor(clip) {
+        const folderOf = clip.includes("/")
+            ? clip.slice(0, clip.lastIndexOf("/")) : "";
+        return [...TL_REGISTRY.values()].filter((t) => {
+            const f = t.folder();
+            return !f || f === folderOf;
+        });
+    }
+    function updateActionBtns() {
+        // a take that already sits in a timeline is neither addable
+        // nor safe to delete from here
+        const inTl = current && [...TL_REGISTRY.values()]
+            .some((t) => t.has?.(current.clip));
+        addTlBtn.style.display = current && !inTl &&
+            tlMatchesFor(current.clip).length ? "" : "none";
+        delBtn.style.display = current && !inTl ? "" : "none";
+    }
+    // timelines register/unregister (and their sequences change) as
+    // the user works; re-check on hover so the row is honest at the
+    // moment it is looked at
+    btnRow.addEventListener("mouseenter", updateActionBtns);
+    addTlBtn.addEventListener("click", async () => {
+        if (!current) return;
+        const match = tlMatchesFor(current.clip);
+        if (!match.length) {
+            updateActionBtns();
+            return;
+        }
+        for (const t of match) {
+            status.textContent = await t.offer(current.clip);
+        }
+        // the timeline's own refresh is async, so has() still answers
+        // with the OLD sequence here -- but the offer just succeeded,
+        // so the take is in a timeline now: hide directly (the hover
+        // re-check keeps this honest if it is later removed again)
+        addTlBtn.style.display = "none";
+        delBtn.style.display = "none";
+    });
+    delBtn.addEventListener("click", async () => {
+        if (!current) return;
+        if (!confirm(`Delete ${current.clip} and its sidecar?`)) return;
+        try {
+            const resp = await api.fetchApi("/obvpm/h3/delete_take", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: current.clip }),
+            });
+            if (!resp.ok) throw new Error(await resp.text());
+            const gone = current.clip;
+            // module caches would otherwise serve a ghost if the save
+            // counter reuses the name
+            tlMetaCache.delete(gone);
+            tlFramesCache.delete(gone);
+            for (const t of TL_REGISTRY.values()) t.forget(gone);
+            current = null;
+            node.properties.h3_result = null;
+            video.pause();
+            video.removeAttribute("src");
+            video.load();
+            video.style.display = "none";
+            strip.replaceChildren();
+            strip.style.display = "none";
+            btnRow.style.display = "none";
+            status.style.color = PAL.sub;
+            status.textContent = "deleted " + gone;
+        } catch (err) {
+            status.style.color = "#de5b5b";
+            status.textContent = "delete failed: " +
+                String(err?.message ?? err).slice(0, 120);
+        }
+    });
+
+    node._h3ShowResult = (d) => {
+        node.properties = node.properties || {};
+        node.properties.h3_result = d;
+        void render(d);
+    };
+    const onConfigure = node.onConfigure;
+    node.onConfigure = function () {
+        const r = onConfigure?.apply(this, arguments);
+        const d = this.properties?.h3_result;
+        if (d) void render(d);
+        return r;
+    };
+    const onRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        rpThemeMO.disconnect();
+        clearInterval(runTimer);
+        api.removeEventListener("execution_start", onRunStart);
+        api.removeEventListener("execution_success", onRunEnd);
+        api.removeEventListener("execution_error", onRunEnd);
+        api.removeEventListener("execution_interrupted", onRunEnd);
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        return onRemoved?.apply(this, arguments);
+    };
+}

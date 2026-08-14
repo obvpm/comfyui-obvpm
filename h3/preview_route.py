@@ -42,6 +42,7 @@ import tempfile
 import folder_paths
 
 from . import frames as fr
+from . import mctx
 from . import nodes_assemble as na
 from .nodes_save import H3SaveVideoWithMCtx
 
@@ -203,7 +204,7 @@ def build_preview(sequence, crf, probe=False, base_folder="",
                     pieces.append({"path": bp, "from": 0, "to": b - a})
             na._mux_pieces(pieces, tmp, audio)
             os.replace(tmp, out_path)
-        _LOG.info("obvpm.h3: preview built at %s (%d clips, %d frames)",
+        _LOG.debug("obvpm.h3: preview built at %s (%d clips, %d frames)",
                   out_path, len(entries), total)
     except na._StreamMismatch as why:
         _LOG.warning("obvpm.h3: preview smart-cut not possible (%s); "
@@ -252,6 +253,31 @@ def export_cut(sequence, crf, base_folder, preview_filename,
     return rel, cached
 
 
+def delete_take(path):
+    """Delete a take (MP4 + its sidecar) inside the output folder.
+
+    Exists for the Result Preview's delete button: rejecting a take
+    right where its measured seam verdict appeared. Returns the
+    output-relative names removed.
+    """
+    root = os.path.abspath(folder_paths.get_output_directory())
+    ap = os.path.abspath(os.path.join(root, str(path or "").strip()))
+    if os.path.commonpath([root, ap]) != root:
+        raise ValueError("delete_take: %r escapes the output folder"
+                         % path)
+    if not ap.lower().endswith(".mp4"):
+        raise ValueError("delete_take: only takes (.mp4) can be deleted")
+    if not os.path.isfile(ap):
+        raise ValueError("delete_take: not found: %r" % path)
+    removed = []
+    for f in (ap, mctx.sidecar_path(ap)):
+        if os.path.isfile(f):
+            os.remove(f)
+            removed.append(os.path.relpath(f, root).replace(os.sep, "/"))
+    _LOG.info("obvpm.h3: deleted take %s", ", ".join(removed))
+    return removed
+
+
 def register():
     from aiohttp import web
     from server import PromptServer
@@ -293,5 +319,18 @@ def register():
             _LOG.exception("obvpm.h3: export failed")
             return web.json_response({"error": str(exc)}, status=400)
 
-    _LOG.info("obvpm.h3: preview + export routes registered "
-              "(/obvpm/h3/preview_cut, /obvpm/h3/export)")
+    @PromptServer.instance.routes.post("/obvpm/h3/delete_take")
+    async def _delete_take(request):
+        import asyncio
+        try:
+            data = await request.json()
+            removed = await asyncio.to_thread(
+                delete_take, str(data.get("path", "")))
+            return web.json_response({"removed": removed})
+        except Exception as exc:
+            _LOG.exception("obvpm.h3: delete_take failed")
+            return web.json_response({"error": str(exc)}, status=400)
+
+    _LOG.info("obvpm.h3: preview/export/delete routes registered "
+              "(/obvpm/h3/preview_cut, /obvpm/h3/export, "
+              "/obvpm/h3/delete_take)")

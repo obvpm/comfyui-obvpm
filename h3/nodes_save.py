@@ -55,7 +55,7 @@ class H3SaveVideoWithMCtx:
                     "tooltip": "Output path prefix, like core save nodes. "
                                "Numbering is appended automatically."}),
                 "crf": ("INT", {
-                    "default": 19, "min": 0, "max": 51,
+                    "default": 23, "min": 0, "max": 51,
                     "tooltip": "H.264 quality (lower = better, bigger). The "
                                "MP4 is the delivery copy; the sidecar keeps "
                                "the lossless latents regardless."}),

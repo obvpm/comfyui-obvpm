@@ -9,6 +9,7 @@ rest of obvpm.
 
 from .nodes_assemble import H3Assemble, H3Timeline
 from .nodes_load import H3LoadMCtx, H3LoadVideoWithMCtx
+from .nodes_result import H3ResultPreview
 from .nodes_pins import (
     H3MCtxApplyPins,
     H3MCtxPinSpec,
@@ -39,6 +40,7 @@ NODE_CLASS_MAPPINGS = {
     "H3TrimPinned": H3TrimPinned,
     "H3Assemble": H3Assemble,
     "H3Timeline": H3Timeline,
+    "H3ResultPreview": H3ResultPreview,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -52,6 +54,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3TrimPinned": "H3 MCtx Trim Pinned",
     "H3Assemble": "H3 MCtx Assemble",
     "H3Timeline": "H3 MCtx Timeline",
+    "H3ResultPreview": "H3 MCtx Result Preview",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

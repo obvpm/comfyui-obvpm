@@ -165,7 +165,7 @@ def resolve_sequence(sequence):
         if left["exit"] is None:
             left["exit"] = exit_f
         right["enter"] = enter_f
-        _LOG.info("obvpm.h3: seam %s | %s -- %s",
+        _LOG.debug("obvpm.h3: seam %s | %s -- %s",
                   left["clip"], right["clip"], note)
     for e in entries:
         if e["enter_override"] is not None:
@@ -394,6 +394,14 @@ class H3Timeline:
                     "default": 23, "min": 0, "max": 51,
                     "tooltip": "H.264 quality for re-encoded seam bridges "
                                "and the export (lower = better, bigger)."}),
+                "auto_add": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When a run produces a clip that extends "
+                               "the LAST clip in the timeline, append it "
+                               "automatically. Anything else a run "
+                               "produces (prepends, branches off earlier "
+                               "clips, roots) is only offered as a chip "
+                               "below the timeline."}),
             },
         }
 
