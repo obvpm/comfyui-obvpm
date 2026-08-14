@@ -2,8 +2,9 @@
 
   H3MCtxPinSpec     spec builder: pure data, no tensor work
   H3MCtxApplyPins   slices (sole frame<->latent math site, via
-                    _prepare_pins) and feeds pinned runs to the vendored
-                    patches; outputs the resolved pins wire
+                    _prepare_pins) and attaches pinned runs as native
+                    `minimax_keyframes` entries; outputs the resolved
+                    pins wire
   H3TrimPinned      removes pinned scaffolding from the decoded output
 
 Phase 1 scope: a single `before` pin sourced from a clip's tail -- the
@@ -18,47 +19,56 @@ import node_helpers
 
 from . import frames as fr
 from .avpack import unpack_av
-from .vendor.patch_layout import (
-    MC_KEY,
-    MC_AUDIO_KEY,
-    apply_patch as _apply_layout_patch,
-    is_applied as _layout_patch_applied,
-)
-from .vendor.patch_payload import (
-    apply_patch as _apply_payload_patch,
-    is_applied as _payload_patch_applied,
-)
 
 _LOG = logging.getLogger("obvpm.h3")
 
 
-def _ensure_layout_patch():
-    """Lazy-install the layout patch on first use (never at import).
+def _ensure_native_anchors():
+    """Refuse unless live core natively places pins where we need them.
 
-    apply_patch() self-tests bit-identical stock behavior and detects
-    co-patchers (other copies stand down; a foreign wrapper -- e.g.
-    MMH3Tools' patch_guide_origin -- is refused, never stacked).
+    Core merged arbitrary-position, multi-frame keyframe anchoring
+    (PR #15439): PackedLayout places every keyframe at
+    `cursor + FRAME_RESCALE * resolved_frame_index`, with the cursor past
+    the reference spans, and extra_conds concatenates keyframe and
+    reference latents. That is the whole mechanism this pack used to
+    carry as runtime patches; pins now ride plain `minimax_keyframes`.
+
+    Checked here, on first apply, because the failure modes are silent:
+    an OLDER core hard-rejects interior anchors only at sampling time
+    (or, worse, a foreign pack's patch places them by different rules).
+    The new signature dropped `frame_count`, so its absence plus the
+    `keyframes` parameter identifies a native core; a wrapped or
+    replaced constructor identifies a foreign patcher (H3Studio,
+    MMH3Tools, the Motion-Context lineage) whose coordinate rules we
+    must not build on.
     """
-    if _layout_patch_applied():
-        return
-    # The vendored detection catches wrapped __init__ methods, but not a
-    # pack that REPLACES the PackedLayout class outright (H3Studio's
-    # middle_frame_patch subclasses GuidePackedLayout and rebinds the
-    # module attribute; its own guard then makes the two packs mutually
-    # exclusive). A replaced class carries a non-core __module__.
+    import inspect
     import comfy.ldm.minimax.model as _mm
-    cls_mod = getattr(getattr(_mm, "PackedLayout", None), "__module__", "")
+    cls = getattr(_mm, "PackedLayout", None)
+    init = getattr(cls, "__init__", None)
+    cls_mod = getattr(cls, "__module__", "")
     if cls_mod and not cls_mod.startswith("comfy."):
         raise RuntimeError(
             "obvpm.h3: another pack has REPLACED H3's PackedLayout class "
             "(it now comes from %r -- ComfyUI-H3Studio does this). The two "
             "continuation mechanisms cannot coexist in one session; disable "
             "one pack and restart." % cls_mod)
-    if not _apply_layout_patch():
+    if hasattr(init, "__wrapped__") or getattr(init, "__module__", cls_mod) != cls_mod:
         raise RuntimeError(
-            "obvpm.h3: the H3 layout patch could not be applied, so pinned "
-            "runs would be rejected or mispositioned. The reason was logged "
-            "just above this error.")
+            "obvpm.h3: another pack has patched H3's PackedLayout "
+            "constructor (it now comes from %r). This pack pins through "
+            "core's own keyframe anchoring and cannot run under a foreign "
+            "layout patch; disable that pack and restart."
+            % getattr(init, "__module__", "?"))
+    try:
+        params = tuple(inspect.signature(init).parameters)
+    except (TypeError, ValueError):
+        params = ()
+    if "keyframes" not in params or "frame_count" in params:
+        raise RuntimeError(
+            "obvpm.h3: this ComfyUI predates native arbitrary-position "
+            "keyframe anchors for MiniMax H3 (PR #15439, merged 2026-08-13). "
+            "Update ComfyUI to use the mctx pin nodes.")
 
 
 def pins_trim_totals(pins):
@@ -73,16 +83,6 @@ def pins_trim_totals(pins):
     tail = sum(int(p.get("covered", 0)) for p in (pins or [])
                if p.get("place") == "after")
     return head, tail
-
-
-def _ensure_payload_patch():
-    if _payload_patch_applied():
-        return
-    if not _apply_payload_patch():
-        raise RuntimeError(
-            "obvpm.h3: the H3 payload patch could not be applied. Without it "
-            "the pinned audio ref would overwrite the pinned video latents. "
-            "The reason was logged just above this error.")
 
 
 class H3MCtxPinSpec:
@@ -379,7 +379,7 @@ class H3MCtxApplyPins:
         "Slices the pinned windows out of the sources (the sole "
         "frame/latent math site: window snapping, phase checks, "
         "cumulative-total audio cut) and attaches each pinned run to the "
-        "conditioning via the vendored layout/payload patches. The pins "
+        "conditioning as native H3 keyframe anchors. The pins "
         "output carries the resolved slices -- feed it to Trim/Save so "
         "they read what was actually pinned."
     )
@@ -460,31 +460,28 @@ class H3MCtxApplyPins:
             _LOG.info("obvpm.h3: pin from an encoded (pixel-grade) source; "
                       "continuity is soft, not exact")
 
-        _ensure_layout_patch()
+        _ensure_native_anchors()
 
         # Pinned run coordinates on the target timeline. before: indices
         # 0..covered-1 (extend; trimmed off the head). after: the LAST
         # covered indices (prepend; generation runs TOWARD the pinned
         # content, which generalizes stock's trained-in last-frame anchor;
-        # trimmed off the tail). Stock always gets a legal index-0 anchor;
-        # the real position rides under MC_KEY (vendored mechanism).
+        # trimmed off the tail). One keyframe entry carries the whole
+        # window: core assigns its steps cond_t + cumsum(FRAME_RESCALE *
+        # FRAME_PER_TOKEN[k % 5]) from k=0, which matches the target's own
+        # step pattern at `base` because both the slice start and `base`
+        # sit on the 17-frame group grid (phase 0; _prepare_pins refused
+        # anything else).
         base = 0 if place == "before" else frame_count - covered
-        offsets = [base + o for o in fr.step_offsets(int(pin["steps"]))]
-        keyframes = []
-        for k, p in enumerate(offsets):
-            keyframes.append({
-                "resolved_frame_index": 0,
-                MC_KEY: p,
-                "latent": pin["video"][:, :, k:k + 1],
-            })
-        out = node_helpers.conditioning_set_values(conditioning, {
-            "minimax_keyframes": keyframes,
-            "minimax_frame_count": frame_count,
-        })
+        keyframes = [{
+            "resolved_frame_index": base,
+            "latent": pin["video"],
+        }]
 
         rt = int(pin.get("audio_steps", 0))
-        if rt > 0 and pin.get("audio") is not None:
-            _ensure_payload_patch()
+        pin_audio = pin.get("audio") if rt > 0 else None
+        end_frame = 0.0
+        if pin_audio is not None:
             # End-align the pinned audio with the pinned video's END on
             # the target timeline: frame `covered` for a before-pin,
             # `frame_count` for an after-pin. The sliced audio reaches
@@ -492,28 +489,42 @@ class H3MCtxApplyPins:
             # only when the slice ends at the source clip's end), so the
             # end coordinate moves by that much, then snaps onto the
             # target's own audio grid (a third of a step is 8.3 ms; the
-            # snap stops the offset cycling across chains). Vendored math.
+            # snap stops the offset cycling across chains). Core anchors
+            # an audio window's START at FRAME_RESCALE *
+            # resolved_frame_index and advances 1.0 per audio latent
+            # step, so ending at integer audio coordinate `end_coord`
+            # means a fractional frame index -- fine, PackedLayout only
+            # ever multiplies it (the int restriction lives in the
+            # AddGuide node, not the model).
             end_base = covered if place == "before" else frame_count
             end_frame = float(end_base) + float(pin["overhang"]) / fr.FRAME_RESCALE
             end_coord = round(fr.FRAME_RESCALE * end_frame)
             end_frame = end_coord / fr.FRAME_RESCALE
-            ref = {
-                "kind": "audio",
-                "ref_audio_t": rt,
-                "audio_latent": pin["audio"],
-                MC_AUDIO_KEY: end_frame,
-            }
-            out = node_helpers.conditioning_set_values(
-                out, {"minimax_refs": [ref]}, append=True)
+            keyframes.append({
+                "resolved_frame_index": (end_coord - rt) / fr.FRAME_RESCALE,
+                "audio_latent": pin_audio,
+            })
+
+        # Append to any keyframes already on the conditioning (a stock
+        # first/last frame, an AddGuide chain): coordinates now come from
+        # one native rulebook, so e.g. extend-toward-image = this pin +
+        # a stock last-frame keyframe is a legal combination.
+        prior = list(conditioning[0][1].get("minimax_keyframes", []))
+        if prior:
+            _LOG.info("obvpm.h3: appending pin to %d existing keyframe "
+                      "anchor(s) on the conditioning", len(prior))
+        out = node_helpers.conditioning_set_values(conditioning, {
+            "minimax_keyframes": prior + keyframes,
+        })
 
         _LOG.info(
             "obvpm.h3: pinned %d frames (%d steps) at the %s of a %d frame "
             "clip at %dx%d (indices %d..%d); audio %s; trim %d off the %s",
             covered, int(pin["steps"]),
             "head" if place == "before" else "tail",
-            frame_count, width, height, offsets[0], offsets[-1],
-            ("%d steps ending at frame %.3f" % (rt, end_frame)) if rt > 0
-            and pin.get("audio") is not None else "off", covered,
+            frame_count, width, height, base, base + covered - 1,
+            ("%d steps ending at frame %.3f" % (rt, end_frame))
+            if pin_audio is not None else "off", covered,
             "head" if place == "before" else "tail")
         return (out, pins)
 

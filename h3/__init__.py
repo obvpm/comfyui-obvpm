@@ -2,7 +2,7 @@
 
 Takes are clip pairs (MP4 + .mctx.safetensors latent sidecar) with
 content-addressed lineage; continuation runs through the pins pipeline
-(spec -> prepare -> apply) on top of vendored runtime patches. Imported
+(spec -> prepare -> apply) on core's native keyframe anchoring. Imported
 by the pack root behind a guard: failure here must never take down the
 rest of obvpm.
 """
