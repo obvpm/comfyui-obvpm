@@ -359,7 +359,7 @@ app.registerExtension({
 // chips derived like the Python _derive_seam) and previews the cut by
 // chaining clips in one <video> honoring the derived enter/exit points.
 
-const TL_NODE = "H3Assemble";
+const TL_NODE = "H3Timeline";
 const TL_FPS = 24;
 const TL_DRAG_MIME = "application/x-obvpm-timeline-index";
 const TL_PICKER_CLASS = "H3LoadVideoWithMCtx"; // combo lists the output tree
@@ -368,7 +368,7 @@ const TL_COLORS = { seamless: "#4d9960", cut: "#c9973b", butt: "#a4aab4" };
 function tldbg(...args) {
     console.log("[obvpm-h3-timeline]", ...args);
 }
-tldbg("timeline code loaded, build v7-panel-probe");
+tldbg("timeline code loaded, build v9-timeline-node");
 
 function tlParseSequence(text) {
     const out = [];
@@ -575,14 +575,25 @@ app.registerExtension({
             const fullBtn = mkBtn("▶ full",
                 "Build the real cut into a temp file and play it "
                 + "seamlessly -- identical content to the export");
+            quickBtn.style.minWidth = "90px";
+            fullBtn.style.minWidth = "90px";
+            const exportBtn = mkBtn("⇪ export",
+                "Write the current cut to the output folder under "
+                + "filename_prefix (byte-identical to the full preview; "
+                + "rebuilds first if the preview is stale)");
             const stateChip = document.createElement("span");
             Object.assign(stateChip.style, {
-                font: "11px sans-serif", color: "#9aa1ac",
+                font: "12px sans-serif", color: "#9aa1ac",
                 whiteSpace: "nowrap",
             });
+            // export sits alone at the far right; the built-state text
+            // rides with the preview buttons and hides when there is
+            // nothing built
+            exportBtn.style.marginLeft = "auto";
+            exportBtn.style.minWidth = "90px";
             // two rows: playback controls ride with the preview/timeline,
             // the clip picker sits at the very bottom
-            header.append(quickBtn, fullBtn, stateChip);
+            header.append(quickBtn, fullBtn, stateChip, exportBtn);
             const pickerRow = document.createElement("div");
             Object.assign(pickerRow.style,
                 { display: "flex", gap: "6px", alignItems: "center" });
@@ -1110,30 +1121,83 @@ app.registerExtension({
                 stateChip.textContent = text;
                 stateChip.style.color = color;
             }
-            function crfValue() {
-                return node.widgets?.find((w) => w.name === "crf")
-                    ?.value ?? 19;
+            function widgetValue(name, fallback) {
+                return node.widgets?.find((w) => w.name === name)
+                    ?.value ?? fallback;
             }
+            function crfValue() { return widgetValue("crf", 19); }
             async function previewApi(probe) {
                 const resp = await api.fetchApi("/obvpm/h3/preview_cut", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ sequence: seqWidget.value,
-                                           crf: crfValue(), probe }),
+                    body: JSON.stringify({
+                        sequence: seqWidget.value, crf: crfValue(),
+                        base_folder: widgetValue("base_folder", ""),
+                        preview_filename:
+                            widgetValue("preview_filename", ""),
+                        probe,
+                    }),
                 });
                 if (!resp.ok) throw new Error(await resp.text());
                 return resp.json();
             }
             function adoptSingle(d) {
+                // one overwritten file per node: the URL only changes via
+                // the content key, so ?v= is what defeats the browser cache
                 single = {
                     url: api.apiURL(
                         `/view?filename=${encodeURIComponent(d.filename)}` +
                         `&subfolder=${encodeURIComponent(d.subfolder)}` +
-                        `&type=temp`),
+                        `&type=${encodeURIComponent(d.type ?? "output")}` +
+                        `&v=${encodeURIComponent(d.v ?? "")}`),
                     starts: d.starts,
                 };
-                setChip("full ✓", "#4d9960");
+                setChip("full built ✓", "#4d9960");
             }
+            let exportSeq = 0;
+            async function doExport() {
+                const seq = ++exportSeq;
+                exportBtn.disabled = true;
+                exportBtn.textContent = "⏳ export";
+                try {
+                    const resp = await api.fetchApi("/obvpm/h3/export", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sequence: seqWidget.value, crf: crfValue(),
+                            base_folder: widgetValue("base_folder", ""),
+                            preview_filename:
+                                widgetValue("preview_filename", ""),
+                            export_filename_prefix: widgetValue(
+                                "export_filename_prefix", "full"),
+                        }),
+                    });
+                    if (!resp.ok) throw new Error(await resp.text());
+                    const d = await resp.json();
+                    tldbg("exported:", d.path);
+                    exportBtn.textContent = "✓ exported";
+                    exportBtn.title = "Last export: " + d.path;
+                    app.extensionManager?.toast?.add?.({
+                        severity: "success", summary: "Cut exported",
+                        detail: d.path, life: 4000,
+                    });
+                    // the export ensured a current build server-side;
+                    // adopt it so "▶ full" is instant now
+                    void probeFull();
+                } catch (err) {
+                    tldbg("export failed:", err);
+                    exportBtn.textContent = "✗ export";
+                    app.extensionManager?.toast?.add?.({
+                        severity: "error", summary: "Export failed",
+                        detail: String(err?.message ?? err), life: 6000,
+                    });
+                }
+                exportBtn.disabled = false;
+                setTimeout(() => {
+                    if (seq === exportSeq) exportBtn.textContent = "⇪ export";
+                }, 2500);
+            }
+            exportBtn.addEventListener("click", () => void doExport());
             let probeSeq = 0;
             async function probeFull() {
                 const seq = ++probeSeq;
@@ -1141,7 +1205,7 @@ app.registerExtension({
                     const d = await previewApi(true);
                     if (seq !== probeSeq) return;
                     if (d.cached) adoptSingle(d);
-                    else setChip("full –", "#9aa1ac");
+                    else setChip("", "#9aa1ac");
                 } catch {
                     if (seq === probeSeq) setChip("", "#9aa1ac");
                 }
@@ -1192,7 +1256,7 @@ app.registerExtension({
                         adoptSingle(await previewApi(false));
                     } catch (err) {
                         tldbg("full preview failed; quick fallback:", err);
-                        setChip("full ✗", "#de5b5b");
+                        setChip("✗ build failed", "#de5b5b");
                     }
                     fullBtn.disabled = false;
                     fullBtn.textContent = "▶ full";
@@ -1755,14 +1819,40 @@ app.registerExtension({
                 return onRemoved?.apply(this, arguments);
             };
 
-            void (async () => {
-                const clips = await tlFetchClipList();
-                picker.replaceChildren(...clips.map((c) => {
+            // picker (and thereby seam-popup candidates) scoped by the
+            // base_folder widget; re-filtered live when it changes. The
+            // node's own preview file lives in that folder too -- hide
+            // it, it is a cut, not a source clip.
+            let allPickerClips = [];
+            function populatePicker() {
+                const folder = String(widgetValue("base_folder", ""))
+                    .trim().replace(/^\/+|\/+$/g, "");
+                const pv = (folder ? folder + "/" : "") +
+                    String(widgetValue("preview_filename",
+                                       "obvpm_h3_preview")).trim() +
+                    ".mp4";
+                const shown = allPickerClips.filter((c) =>
+                    c !== pv && (!folder || c.startsWith(folder + "/")));
+                picker.replaceChildren(...shown.map((c) => {
                     const o = document.createElement("option");
                     o.value = o.textContent = c;
                     return o;
                 }));
+            }
+            void (async () => {
+                allPickerClips = await tlFetchClipList();
+                populatePicker();
             })();
+            const folderWidget = node.widgets?.find(
+                (w) => w.name === "base_folder");
+            if (folderWidget) {
+                const folderCb = folderWidget.callback;
+                folderWidget.callback = function (...args) {
+                    const r = folderCb?.apply(this, args);
+                    populatePicker();
+                    return r;
+                };
+            }
             void refresh();
             return result;
         }

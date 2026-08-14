@@ -7,7 +7,7 @@ by the pack root behind a guard: failure here must never take down the
 rest of obvpm.
 """
 
-from .nodes_assemble import H3Assemble
+from .nodes_assemble import H3Assemble, H3Timeline
 from .nodes_load import H3LoadMCtx, H3LoadVideoWithMCtx
 from .nodes_pins import (
     H3MCtxApplyPins,
@@ -38,6 +38,7 @@ NODE_CLASS_MAPPINGS = {
     "H3MCtxApplyPins": H3MCtxApplyPins,
     "H3TrimPinned": H3TrimPinned,
     "H3Assemble": H3Assemble,
+    "H3Timeline": H3Timeline,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -50,6 +51,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3MCtxApplyPins": "H3 MCtx Apply Pins",
     "H3TrimPinned": "H3 MCtx Trim Pinned",
     "H3Assemble": "H3 MCtx Assemble",
+    "H3Timeline": "H3 MCtx Timeline",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

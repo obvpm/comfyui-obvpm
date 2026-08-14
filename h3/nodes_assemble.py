@@ -336,6 +336,71 @@ def _mux_pieces(pieces, out_path, audio):
             out.mux(aout.encode())
 
 
+class H3Timeline:
+    """The timeline hub: composes, previews and exports -- never executes.
+
+    All the work happens through the timeline widget (web/h3_mctx_ui.js)
+    and the stateless routes (preview_route.py): the full preview is a
+    server-built smart cut, and the export button promotes that exact
+    file into output/. The node has no outputs and is not an output
+    node, so a workflow run never touches it -- queueing a generation
+    while composing costs nothing. For an in-graph assembled result
+    (feed frames onward in one run), use H3 MCtx Assemble instead.
+    """
+
+    CATEGORY = "obvpm/h3"
+    FUNCTION = "noop"
+    RETURN_TYPES = ()
+    DESCRIPTION = (
+        "Timeline editor for composed clips: seam-aware blocks, "
+        "drag-reorder, seamless server-built preview, and an export "
+        "button that writes the current cut to the output folder "
+        "(byte-identical to the full preview). Never runs as part of a "
+        "workflow -- previewing and exporting are button-driven."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sequence": ("STRING", {
+                    "default": "", "multiline": True,
+                    "tooltip": "One clip per line, in playback order, as "
+                               "output-relative paths (the same values the "
+                               "H3 loaders list), e.g. h3/clip_00001.mp4. "
+                               "Append ' @ N' to force a clip to enter at "
+                               "delivered frame N instead of the derived "
+                               "seam. Lines starting with # are ignored."}),
+                "base_folder": ("STRING", {
+                    "default": "",
+                    "tooltip": "Output-relative folder this node works "
+                               "in (e.g. h3): scopes the clip picker and "
+                               "seam suggestions, and holds the preview "
+                               "file and exports. Empty = the output "
+                               "root."}),
+                "preview_filename": ("STRING", {
+                    "default": "obvpm_h3_preview",
+                    "tooltip": "Name (no extension) of the single "
+                               "preview file, written into base_folder "
+                               "and overwritten on every full build. "
+                               "Give each Timeline node its own name if "
+                               "you use several."}),
+                "export_filename_prefix": ("STRING", {
+                    "default": "full",
+                    "tooltip": "Filename prefix for the export button; "
+                               "written into base_folder with the usual "
+                               "counter, like core save nodes."}),
+                "crf": ("INT", {
+                    "default": 23, "min": 0, "max": 51,
+                    "tooltip": "H.264 quality for re-encoded seam bridges "
+                               "and the export (lower = better, bigger)."}),
+            },
+        }
+
+    def noop(self):
+        return ()
+
+
 class H3Assemble:
     CATEGORY = "obvpm/h3"
     FUNCTION = "assemble"
