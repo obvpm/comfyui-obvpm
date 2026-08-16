@@ -5,12 +5,14 @@ const MARGIN = 10; // node-space px, matches litegraph widget margin
 const HANDLE = 8; // node-space px hit radius for corner handles
 const MIN_SEL = 6; // drags smaller than this (node-space px) clear the crop
 const MIN_EDITOR_H = 80; // minimum height of the crop editor area
+// LGraphNode.resizeHandleSize — the corner zone litegraph resizes from.
+const RESIZE_ZONE = 15;
 
 const DEBUG = false;
 function dbg(...args) {
     if (DEBUG) console.log("[obvpm-crop]", ...args);
 }
-dbg("extension v4 (canvas widget) loaded");
+dbg("extension v5 (canvas widget) loaded");
 
 function parseImageValue(value) {
     if (!value) return null;
@@ -152,6 +154,26 @@ app.registerExtension({
                 return { mode: "new" };
             }
 
+            // The height litegraph allocated to this widget. Kept here (not
+            // read back off the widget) because the computedHeight property
+            // below reports a SHORTER box to litegraph's hit test, and
+            // drawing must use the real allocation.
+            let allocHeight;
+
+            // The editor's real box height. This widget is the node's last
+            // one, so the node's own size is the truth: deriving from it means
+            // a stale allocation can never leave the preview drawn (or
+            // hit-tested) at the wrong size. Falls back to the allocation.
+            function boxHeight(widget, widgetY, fallback) {
+                if (isVueMode()) return fallback;
+                const nodeH = node.size?.[1];
+                const visible = node.widgets?.filter((w) => !w.hidden);
+                const isLast =
+                    !!visible && visible[visible.length - 1] === widget;
+                if (nodeH == null || widgetY == null || !isLast) return fallback;
+                return Math.max(MIN_EDITOR_H, nodeH - widgetY);
+            }
+
             const editor = {
                 name: "crop_editor",
                 type: "obvpm_cropeditor",
@@ -175,7 +197,7 @@ app.registerExtension({
 
                 draw: function (ctx, _node, widgetWidth, y, H, lowQuality) {
                     const u = ui();
-                    const h = (this.computedHeight ?? H) - 8;
+                    const h = boxHeight(this, y, allocHeight ?? H) - 8;
                     const x = MARGIN;
                     // In canvas mode the width param can lag the node during
                     // interactive resizing — trust the node's actual width
@@ -420,10 +442,26 @@ app.registerExtension({
             // Hover cursors (canvas mode): resize arrows on handles, hand
             // over the selection, crosshair to draw, cell when a click would
             // clear the existing crop.
+            // Outside the image: name the cursor litegraph would show rather
+            // than blanking it. LGraphCanvas caches the last cursor it wrote
+            // and skips redundant writes, so a bare "" from here desyncs that
+            // cache and the resize cursor never appears again.
+            function cursorOutside(px, py) {
+                const w = node.size?.[0];
+                const h = node.size?.[1];
+                if (w == null || h == null) return "default";
+                if (py <= h && py >= h - RESIZE_ZONE) {
+                    if (px >= w - RESIZE_ZONE) return "nwse-resize";
+                    if (px <= RESIZE_ZONE) return "nesw-resize";
+                }
+                return "default";
+            }
             function cursorFor(px, py) {
-                if (!state.img || !state.box) return "";
+                if (!state.img || !state.box) return cursorOutside(px, py);
                 const { bx, by, bw, bh } = state.box;
-                if (px < bx || px > bx + bw || py < by || py > by + bh) return "";
+                if (px < bx || px > bx + bw || py < by || py > by + bh) {
+                    return cursorOutside(px, py);
+                }
                 const hit = hitTest(px, py);
                 if (hit.mode === "resize") {
                     return hit.corner === "nw" || hit.corner === "se"
@@ -447,22 +485,45 @@ app.registerExtension({
                 if (el) el.style.cursor = "";
             };
 
+            // computedHeight serves two masters: litegraph's layout (which
+            // sets it) and its widget hit test, LGraphNode.getWidgetOnPos.
+            // A growable widget that fills the node reports a box covering
+            // the bottom corners, and LGraphCanvas checks widgets BEFORE the
+            // resize corner (both for the hover cursor and on pointerdown),
+            // so the node becomes nearly impossible to resize. Report a box
+            // that stops above the info row: that strip is text only, so
+            // nothing interactive is given up, and the node's bottom edge
+            // and corners go back to litegraph.
+            //
             // In Vue (Nodes 2.0) mode the widget mirror prefers computedHeight
             // over computeSize — but computedHeight is a stale graph-units
             // value from the canvas-mode layout. Hide it there so the mirror
             // falls back to computeSize with the card's real CSS width.
-            {
-                let storedHeight;
-                Object.defineProperty(editorWidget, "computedHeight", {
-                    configurable: true,
-                    get() {
-                        return isVueMode() ? undefined : storedHeight;
-                    },
-                    set(v) {
-                        storedHeight = v;
-                    },
-                });
-            }
+            Object.defineProperty(editorWidget, "computedHeight", {
+                configurable: true,
+                get() {
+                    if (isVueMode() || allocHeight == null) return undefined;
+                    // Exactly the resize zone: the whole corner band is freed,
+                    // and it lands below the image (the info row is drawn
+                    // there), so the crop handles keep their grab radius.
+                    // No lower clamp here: a floor could report MORE than the
+                    // box at minimum node size, pushing the hit rect past the
+                    // node's bottom edge — the very thing this avoids.
+                    const box = boxHeight(this, this.y, allocHeight);
+                    return Math.max(0, box - RESIZE_ZONE);
+                },
+                set(v) {
+                    allocHeight = v;
+                },
+            });
+            // Width shield: litegraph draws and hit-tests with
+            // `widget.width || node.size[0]`, so a width left on the widget by
+            // anything else would silently shrink both. Always defer to the node.
+            Object.defineProperty(editorWidget, "width", {
+                configurable: true,
+                get: () => undefined,
+                set: () => {},
+            });
 
             // The upload widget publishes the picked image to the node-output
             // preview (shown on the Vue node card) — remove it so only the
